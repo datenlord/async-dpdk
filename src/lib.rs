@@ -114,4 +114,10 @@ use dpdk_sys::*;
 use std::ffi::CString;
 use std::os::raw::*;
 
+pub mod alloc;
 pub mod eal;
+pub mod errno;
+pub mod lcore;
+pub mod mbuf;
+pub mod mempool;
+pub mod tx_buffer;

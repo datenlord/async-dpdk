@@ -16,6 +16,7 @@ name = "async-dpdk"
 version = "0.1.0"
 dependencies = [
  "dpdk-sys",
+ "lazy_static",
 ]
 
 [[package]]
@@ -119,6 +120,7 @@ name = "dpdk-sys"
 version = "0.1.0"
 dependencies = [
  "bindgen",
+ "libc",
  "pkg-config",
 ]
 
