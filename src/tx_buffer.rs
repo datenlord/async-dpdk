@@ -1,5 +1,6 @@
 //! txbuffer
 use crate::mbuf::*;
+use crate::Error;
 use dpdk_sys::*;
 use std::{
     ffi::{c_void, CString},
@@ -17,18 +18,17 @@ pub struct TxBuffer {
 #[allow(unsafe_code)]
 impl TxBuffer {
     /// Allocate a TxBuffer.
-    pub fn alloc() -> Self {
+    pub fn alloc() -> Result<Self, Error> {
         let ty = CString::new("tx_buffer").unwrap();
         let ptr = unsafe {
             rte_zmalloc(ty.as_ptr(), mem::size_of::<rte_eth_dev_tx_buffer>(), 0)
                 as *mut rte_eth_dev_tx_buffer
         };
-        let tb = NonNull::new(ptr).unwrap();
-        Self { tb }
+        NonNull::new(ptr).map_or_else(|| Err(Error::NoMem), |tb| Ok(Self { tb }))
     }
 
     /// Allocate a TxBuffer on the given socket.
-    pub fn alloc_socket(socket: i32) -> Self {
+    pub fn alloc_socket(socket: i32) -> Result<Self, Error> {
         let ty = CString::new("tx_buffer").unwrap();
         let ptr = unsafe {
             rte_zmalloc_socket(
@@ -38,13 +38,14 @@ impl TxBuffer {
                 socket,
             ) as *mut rte_eth_dev_tx_buffer
         };
-        let tb = NonNull::new(ptr).unwrap();
-        Self { tb }
+        NonNull::new(ptr).map_or_else(|| Err(Error::NoMem), |tb| Ok(Self { tb }))
     }
 
     /// Initialize default values for buffered transmitting.
-    pub fn init(&mut self, size: u16) {
-        let _ = unsafe { rte_eth_tx_buffer_init(self.as_ptr(), size) };
+    pub fn init(&mut self, size: u16) -> Result<(), Error> {
+        let errno = unsafe { rte_eth_tx_buffer_init(self.as_ptr(), size) };
+        Error::from_errno(errno)?;
+        Ok(())
     }
 
     /// Send any packets queued up for transmission on a port and HW queue.
@@ -53,8 +54,8 @@ impl TxBuffer {
     /// function. It returns the number of packets successfully sent to the NIC, and calls the
     /// error callback for any unsent packets. Unless explicitly set up otherwise, the default
     /// callback simply frees the unsent packets back to the owning mempool.
-    pub fn flush(&mut self, port_id: u16, queue_id: u16) {
-        let _ = unsafe { rte_eth_tx_buffer_flush(port_id, queue_id, self.as_ptr()) };
+    pub fn flush(&mut self, port_id: u16, queue_id: u16) -> u16 {
+        unsafe { rte_eth_tx_buffer_flush(port_id, queue_id, self.as_ptr()) }
     }
 
     /// Buffer a single packet for future transmission on a port and queue.
@@ -66,8 +67,8 @@ impl TxBuffer {
     /// callback is explicitly set up, the unsent packets are just freed back to the owning
     /// mempool. The function returns the number of packets actually sent i.e. 0 if no buffer
     /// flush occurred, otherwise the number of packets successfully flushed.
-    pub fn buffer(&mut self, pkt: &Mbuf, port_id: u16, queue_id: u16) {
-        let _ = unsafe { rte_eth_tx_buffer(port_id, queue_id, self.as_ptr(), pkt.as_ptr()) };
+    pub fn buffer(&mut self, pkt: &Mbuf, port_id: u16, queue_id: u16) -> u16 {
+        unsafe { rte_eth_tx_buffer(port_id, queue_id, self.as_ptr(), pkt.as_ptr()) }
     }
 
     #[inline(always)]

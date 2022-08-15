@@ -8,3 +8,5 @@ edition = "2021"
 [dependencies]
 dpdk-sys = { path = "../dpdk-sys", version = "0.1" }
 lazy_static = "1.4"
+libc = "0.2"
+thiserror = "1.0"

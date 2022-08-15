@@ -116,8 +116,12 @@ use std::os::raw::*;
 
 pub mod alloc;
 pub mod eal;
-pub mod errno;
 pub mod lcore;
 pub mod mbuf;
 pub mod mempool;
 pub mod tx_buffer;
+
+mod errno;
+
+pub use errno::*;
+pub use dpdk_sys::macros::*;

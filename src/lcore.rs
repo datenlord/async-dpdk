@@ -1,6 +1,6 @@
 //! An module handling lcore.
 
-use dpdk_sys::rte_lcore_id;
+use crate::*;
 
 /// Get current lcore_id.
 #[inline]

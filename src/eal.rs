@@ -1,6 +1,6 @@
 //! EAL (Environment Abstract Layer)
 
-use crate::{errno::parse_err, *};
+use crate::{errno::Error, *};
 
 /// EAL
 #[derive(Debug)]
@@ -102,7 +102,7 @@ impl Builder {
             .collect::<Vec<_>>();
         #[allow(unsafe_code)]
         let errno = unsafe { rte_eal_init(args.len() as _, args.as_mut_ptr()) };
-        parse_err(errno);
+        Error::parse_err(errno);
         Eal
     }
 }
