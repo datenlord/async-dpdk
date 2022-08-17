@@ -1,10 +1,13 @@
 //! DPDK defined error numbers.
-use crate::*;
-use thiserror::Error;
+use dpdk_sys::{errno, rte_exit, rte_strerror};
+use std::os::raw::*;
+
+#[allow(missing_docs)]
+pub type Result<T> = std::result::Result<T, Error>;
 
 #[allow(missing_docs)]
 #[repr(i32)]
-#[derive(Copy, Clone, Debug, Error)]
+#[derive(Copy, Clone, Debug, thiserror::Error)]
 pub enum Error {
     #[error("Operation not permitted")]
     NoPerm = -libc::EPERM,
@@ -16,8 +19,8 @@ pub enum Error {
     Interrupted = -libc::EINTR,
     #[error("Input/output error")]
     IoErr = -libc::EIO,
-    #[error("No such device or address")]
-    NoAddr = -libc::ENXIO,
+    #[error("Device not configured")]
+    NotConfigured = -libc::ENXIO,
     #[error("Argument list too long")]
     TooBig = -libc::E2BIG,
     #[error("Exec format error")]
@@ -48,44 +51,34 @@ pub enum Error {
     BrokenPipe = -libc::EPIPE,
     #[error("Numerical result out of range")]
     OutOfRange = -libc::ERANGE,
+    #[error("Value too large for defined data type")]
+    Overflow = -libc::EOVERFLOW,
     #[error("Not supported")]
     NotSupported = -libc::ENOTSUP,
-    #[error("Not exist")]
-    NotExist,
+    #[error("Operation already in progress")]
+    Already = -libc::EALREADY,
+    #[error("Operation not allowed in secondary processes")]
+    Secondary = -1001, // RTE defined
+    #[error("Missing rte_config")]
+    NoConfig = -1002, // RTE defined
     #[error("Unknown error")]
-    Unknown,
+    Unknown = -1003,
 }
 
 #[allow(missing_docs)]
 impl Error {
     #[inline]
-    pub fn from_errno(errno: i32) -> Result<(), Error> {
+    pub fn from_errno() -> Error {
+        #[allow(unsafe_code)]
+        let errno = unsafe { errno!() };
+        errno.into()
+    }
+    #[inline]
+    pub fn from_ret(errno: i32) -> Result<()> {
         let errno = -errno;
         match errno {
             0 => Ok(()),
-            libc::EPERM => Err(Self::NoPerm),
-            libc::ENOENT => Err(Self::NoEntry),
-            libc::ESRCH => Err(Self::NoProc),
-            libc::EINTR => Err(Self::Interrupted),
-            libc::EIO => Err(Self::IoErr),
-            libc::ENXIO => Err(Self::NoAddr),
-            libc::E2BIG => Err(Self::TooBig),
-            libc::ENOEXEC => Err(Self::NoExec),
-            libc::EBADF => Err(Self::BadFd),
-            libc::EAGAIN => Err(Self::TempUnavail),
-            libc::ENOMEM => Err(Self::NoMem),
-            libc::EACCES => Err(Self::NoAccess),
-            libc::EFAULT => Err(Self::BadAddress),
-            libc::EBUSY => Err(Self::Busy),
-            libc::EEXIST => Err(Self::Exists),
-            libc::EXDEV => Err(Self::CrossDev),
-            libc::ENODEV => Err(Self::NoDev),
-            libc::EINVAL => Err(Self::InvalidArg),
-            libc::ENOSPC => Err(Self::NoSpace),
-            libc::EPIPE => Err(Self::BrokenPipe),
-            libc::ERANGE => Err(Self::OutOfRange),
-            libc::ENOTSUP => Err(Self::NotSupported),
-            e if e > 0 => Err(Self::Unknown),
+            e if e < 0 => Err(e.into()),
             _ => unreachable!(),
         }
     }
@@ -98,6 +91,41 @@ impl Error {
                 let msg = rte_strerror(errno);
                 rte_exit(errno, msg);
             }
+        }
+    }
+}
+
+impl Into<Error> for i32 {
+    fn into(self) -> Error {
+        match self {
+            libc::EPERM => Error::NoPerm,
+            libc::ENOENT => Error::NoEntry,
+            libc::ESRCH => Error::NoProc,
+            libc::EINTR => Error::Interrupted,
+            libc::EIO => Error::IoErr,
+            libc::ENXIO => Error::NotConfigured,
+            libc::E2BIG => Error::TooBig,
+            libc::ENOEXEC => Error::NoExec,
+            libc::EBADF => Error::BadFd,
+            libc::EAGAIN => Error::TempUnavail,
+            libc::ENOMEM => Error::NoMem,
+            libc::EACCES => Error::NoAccess,
+            libc::EFAULT => Error::BadAddress,
+            libc::EBUSY => Error::Busy,
+            libc::EEXIST => Error::Exists,
+            libc::EXDEV => Error::CrossDev,
+            libc::ENODEV => Error::NoDev,
+            libc::EINVAL => Error::InvalidArg,
+            libc::ENOSPC => Error::NoSpace,
+            libc::EPIPE => Error::BrokenPipe,
+            libc::ERANGE => Error::OutOfRange,
+            libc::EOVERFLOW => Error::Overflow,
+            libc::ENOTSUP => Error::NotSupported,
+            libc::EALREADY => Error::Already,
+            1001 => Error::Secondary,
+            1002 => Error::NoConfig,
+            e if e > 0 => Error::Unknown,
+            _ => unreachable!(),
         }
     }
 }

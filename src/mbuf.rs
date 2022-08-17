@@ -1,20 +1,15 @@
 //! mbuf
 
 use dpdk_sys::*;
-use std::{
-    mem::MaybeUninit,
-    os::raw::c_void,
-    ptr::{self, NonNull},
-    slice, ffi::CString,
-};
+use std::{ffi::CString, mem::MaybeUninit, ptr::NonNull, slice};
 
-use crate::mempool::{Mempool, MempoolObj, MempoolInner};
-use crate::Error;
+use crate::mempool::{Mempool, MempoolInner};
+use crate::{Error, Result};
 
 /// The mbuf library provides the ability to allocate and free buffers (mbufs) that may be
 /// used by the DPDK application to store message buffers. The message buffers are stored
 /// in a mempool, using the Mempool Library.
-/// 
+///
 /// It looks like this:
 ///     -------------------------------------------------------------------------------
 ///     | rte_mbuf | priv data | head room |          frame data          | tail room |
@@ -23,38 +18,28 @@ use crate::Error;
 ///  *rte_mbuf              buf_addr
 ///                             <-data_off-><----------data_len----------->
 ///                             <------------------------buf_len---------------------->
-/// 
+///
 #[derive(Debug, Clone)]
 #[allow(missing_copy_implementations)]
 pub struct Mbuf {
     mb: NonNull<rte_mbuf>,
 }
 
-impl MempoolObj for Mbuf {
-    fn as_c_void(&self) -> *mut c_void {
-        self.as_ptr() as *mut c_void
-    }
-}
-
 #[allow(unsafe_code)]
 impl Mbuf {
-    fn new_with_ptr(ptr: *mut rte_mbuf) -> Result<Self, Error> {
-        NonNull::new(ptr).map_or_else(|| Err(Error::NoMem), |mb| Ok(Self { mb }))
+    fn new_with_ptr(ptr: *mut rte_mbuf) -> Result<Self> {
+        NonNull::new(ptr).map_or_else(|| Err(Error::from_errno()), |mb| Ok(Self { mb }))
     }
 
     /// Allocate an uninitialized mbuf from mempool.
     #[inline]
-    pub fn new(mp: &Mempool) -> Result<Self, Error> {
-        let ptr = unsafe { 
-            let ptr = rte_pktmbuf_alloc(mp.as_ptr());
-            rte_pktmbuf_init(mp.as_ptr(), ptr::null_mut(), ptr as *mut _, 0);
-            ptr
-        };
+    pub fn new(mp: &Mempool) -> Result<Self> {
+        let ptr = unsafe { rte_pktmbuf_alloc(mp.as_ptr()) };
         Self::new_with_ptr(ptr)
     }
 
     /// Allocate a bulk of mbufs, initialize refcnt and reset the fields to default values.
-    pub fn new_bulk(mp: &Mempool, n: u32) -> Result<Vec<Self>, Error> {
+    pub fn new_bulk(mp: &Mempool, n: u32) -> Result<Vec<Self>> {
         let mut mbufs = (0..n)
             .map(|_| MaybeUninit::<rte_mbuf>::uninit())
             .collect::<Vec<_>>();
@@ -63,49 +48,57 @@ impl Mbuf {
             .map(|mbuf| mbuf.as_mut_ptr())
             .collect::<Vec<_>>();
         let errno = unsafe { rte_pktmbuf_alloc_bulk(mp.as_ptr(), ptrs.as_mut_ptr(), n) };
-        Error::from_errno(errno)?;
+        Error::from_ret(errno)?;
         let mut v = vec![];
         for mut mbuf in mbufs {
             let ptr = mbuf.as_mut_ptr();
-            unsafe { rte_pktmbuf_init(mp.as_ptr(), ptr::null_mut(), ptr as *mut _, 0); }
+            // unsafe {
+            //     rte_pktmbuf_init(mp.as_ptr(), ptr::null_mut(), ptr as *mut _, 0);
+            // }
             let _mbuf = unsafe { mbuf.assume_init() }; // XXX
             v.push(Self::new_with_ptr(ptr)?)
         }
         Ok(v)
     }
 
-    /// A packet mbuf pool constructor.
-    ///
-    /// This function initializes the mempool private data in the case of a pktmbuf pool. This
-    /// private data is needed by the driver. The function must be called on the mempool before
-    /// it is used.
-    pub fn init_mp(mp: &Mempool) {
-        unsafe {
-            rte_pktmbuf_pool_init(mp.as_ptr(), ptr::null_mut());
-        }
-    }
-
     /// Create a mbuf pool.
-    /// 
+    ///
     /// This function creates and initializes a packet mbuf pool.
-    pub fn create_mp(n: u32, cache_size: u32, socket_id: i32) -> Result<Mempool, Error> {
+    pub fn create_mp(n: u32, cache_size: u32, socket_id: i32) -> Result<Mempool> {
         let name = CString::new("mbuf pool").unwrap();
-        let ptr = unsafe { rte_pktmbuf_pool_create(
+        let ptr = unsafe {
+            rte_pktmbuf_pool_create(
                 name.as_ptr(),
                 n,
                 cache_size,
                 0,
                 RTE_MBUF_DEFAULT_BUF_SIZE as u16,
                 socket_id,
-        ) };
+            )
+        };
         let inner = MempoolInner::new(ptr)?;
         Ok(Mempool::new(inner))
     }
 
     /// Return the mbuf owning the data buffer address of an indirect mbuf.
-    pub fn from_indirect(mi: &Mbuf) -> Result<Self, Error> {
+    pub fn from_indirect(mi: &Mbuf) -> Result<Self> {
         let ptr = unsafe { rte_mbuf_from_indirect(mi.as_ptr()) };
         Self::new_with_ptr(ptr)
+    }
+
+    /// Get the data length of a mbuf.
+    pub fn data_len(&self) -> u32 {
+        unsafe { (*self.as_ptr()).data_len as u32 }
+    }
+
+    /// Get the packet length of a mbuf.
+    pub fn pkt_len(&self) -> u32 {
+        unsafe { (*self.as_ptr()).pkt_len }
+    }
+
+    /// Get the number of segments of a mbuf.
+    pub fn num_segs(&self) -> u32 {
+        unsafe { (*self.as_ptr()).nb_segs as u32 }
     }
 
     /// Get the headroom in a packet mbuf.
@@ -126,7 +119,7 @@ impl Mbuf {
     ///  - Creates a new packet mbuf from the given pool.
     ///  - Attaches newly created mbuf to the segment. Then updates pkt_len and nb_segs
     ///    of the "clone" packet mbuf to match values from the original packet mbuf.
-    pub fn pktmbuf_clone(&self, mp: &Mempool) -> Result<Self, Error> {
+    pub fn pktmbuf_clone(&self, mp: &Mempool) -> Result<Self> {
         let ptr = unsafe { rte_pktmbuf_clone(self.as_ptr(), mp.as_ptr()) };
         Self::new_with_ptr(ptr)
     }
@@ -135,7 +128,7 @@ impl Mbuf {
     ///
     /// Copies all the data from a given packet mbuf to a newly allocated set of mbufs.
     /// The private data are is not copied.
-    pub fn pktmbuf_copy(&self, mp: &Mempool, offset: u32, length: u32) -> Result<Self, Error> {
+    pub fn pktmbuf_copy(&self, mp: &Mempool, offset: u32, length: u32) -> Result<Self> {
         let ptr = unsafe { rte_pktmbuf_copy(self.as_ptr(), mp.as_ptr(), offset, length) };
         Self::new_with_ptr(ptr)
     }
@@ -160,7 +153,7 @@ impl Mbuf {
     #[inline]
     pub fn data_slice(&self) -> &[u8] {
         let m = self.as_ptr();
-        unsafe { 
+        unsafe {
             let data = rte_mbuf_buf_addr(m, (*m).pool).add((*m).data_off as _);
             slice::from_raw_parts(data as *const u8, (*m).data_len as _)
         }
@@ -170,7 +163,7 @@ impl Mbuf {
     #[inline]
     pub fn data_slice_mut(&mut self) -> &mut [u8] {
         let m = self.as_ptr();
-        unsafe { 
+        unsafe {
             let data = rte_mbuf_buf_addr(m, (*m).pool).add((*m).data_off as _);
             slice::from_raw_parts_mut(data as *mut u8, (*m).data_len as _)
         }
@@ -193,10 +186,13 @@ impl Mbuf {
     /// Returns a pointer to the new data start address.
     /// If there is not enough headroom in the first segment, the function will return NULL,
     /// without modifying the mbuf.
-    pub fn prepend(&mut self, len: usize) -> &mut [u8] {
+    pub fn prepend(&mut self, len: usize) -> Result<&mut [u8]> {
         unsafe {
             let data = rte_pktmbuf_prepend(self.as_ptr(), len as _) as *mut u8;
-            slice::from_raw_parts_mut(data, len)
+            if data.is_null() {
+                return Err(Error::InvalidArg);
+            }
+            Ok(slice::from_raw_parts_mut(data, len))
         }
     }
 
@@ -205,10 +201,13 @@ impl Mbuf {
     /// Append len bytes to an mbuf and return a pointer to the start address of the added
     /// data. If there is not enough tailroom in the last segment, the function will return
     /// NULL, without modifying the mbuf.
-    pub fn append(&mut self, len: usize) -> &mut [u8] {
+    pub fn append(&mut self, len: usize) -> Result<&mut [u8]> {
         unsafe {
             let data = rte_pktmbuf_append(self.as_ptr(), len as _) as *mut u8;
-            slice::from_raw_parts_mut(data, len)
+            if data.is_null() {
+                return Err(Error::InvalidArg);
+            }
+            Ok(slice::from_raw_parts_mut(data, len))
         }
     }
 
@@ -217,10 +216,14 @@ impl Mbuf {
     /// Returns a pointer to the start address of the new data area. If the length is greater
     /// than the length of the first segment, then the function will fail and return NULL,
     /// without modifying the mbuf.
-    pub fn adj(&mut self, len: usize) -> &mut [u8] {
+    pub fn adj(&mut self, len: usize) -> Result<()> {
         unsafe {
             let data = rte_pktmbuf_adj(self.as_ptr(), len as _) as *mut u8;
-            slice::from_raw_parts_mut(data, len)
+            if data.is_null() {
+                Err(Error::InvalidArg)
+            } else {
+                Ok(())
+            }
         }
     }
 
@@ -228,17 +231,22 @@ impl Mbuf {
     ///
     /// If the length is greater than the length of the last segment, the function will fail
     /// and return -1 without modifying the mbuf.
-    pub fn trim(&mut self, len: usize) -> i32 {
-        unsafe { rte_pktmbuf_trim(self.as_ptr(), len as _) }
+    pub fn trim(&mut self, len: usize) -> Result<()> {
+        let res = unsafe { rte_pktmbuf_trim(self.as_ptr(), len as _) };
+        if res == 0 {
+            Ok(())
+        } else {
+            Err(Error::InvalidArg)
+        }
     }
 
     /// Chain an mbuf to another, thereby creating a segmented packet.
     ///
     /// Note: The implementation will do a linear walk over the segments to find the tail entry.
     /// For cases when there are many segments, it's better to chain the entries manually.
-    pub fn chain(&self, tail: &mut Mbuf) -> Result<(), Error> {
+    pub fn chain(&mut self, tail: Mbuf) -> Result<()> {
         let errno = unsafe { rte_pktmbuf_chain(self.as_ptr(), tail.as_ptr()) };
-        Error::from_errno(errno)?;
+        Error::from_ret(errno)?;
         Ok(())
     }
 
@@ -246,9 +254,11 @@ impl Mbuf {
     ///
     /// This function moves the mbuf data in the first segment if there is enough tailroom.
     /// The subsequent segments are unchained and freed.
-    pub fn linearize(&mut self) -> Result<(), Error> {
-        let errno = unsafe { rte_pktmbuf_linearize(self.as_ptr()) };
-        Error::from_errno(errno)?;
+    pub fn linearize(&mut self) -> Result<()> {
+        let ret = unsafe { rte_pktmbuf_linearize(self.as_ptr()) };
+        if ret == -1 {
+            return Err(Error::from_errno());
+        }
         Ok(())
     }
 

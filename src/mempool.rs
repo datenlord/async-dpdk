@@ -1,7 +1,7 @@
 //! mempool wrapper
 
 use crate::CString;
-use crate::Error;
+use crate::{Error, Result};
 use dpdk_sys::*;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
@@ -17,6 +17,26 @@ use std::{
 lazy_static! {
     static ref MEMPOOLS: Mutex<HashMap<usize, Weak<MempoolInner>>> = Default::default();
 }
+
+/// Mempool flag. By default, objects addresses are spread between channels in RAM: the pool
+/// allocator will add padding between objects depending on the hardware configuration. If this flag
+/// is set, the allocator will just align them to a cache line.
+pub const MEMPOOL_NO_SPREAD: u32 = RTE_MEMPOOL_F_NO_SPREAD;
+
+/// By default, the returned objects are cache-aligned. This flag removes this constraint,
+/// and no padding will be present between objects. This flag implies RTE_MEMPOOL_F_NO_SPREAD.
+pub const MEMPOOL_NO_CACHE_ALIGN: u32 = RTE_MEMPOOL_F_NO_CACHE_ALIGN;
+
+/// If this flag is set, the default behavior when using rte_mempool_put() or rte_mempool_put_bulk()
+/// is "single-producer". Otherwise, it is "multi-producers".
+pub const MEMPOOL_SINGLE_PRODUCER: u32 = RTE_MEMPOOL_F_SP_PUT;
+
+/// If this flag is set, the default behavior when using rte_mempool_get() or rte_mempool_get_bulk()
+/// is "single-consumer". Otherwise, it is "multi-consumers".
+pub const MEMPOOL_SINGLE_CONSUMER: u32 = RTE_MEMPOOL_F_SC_GET;
+
+/// If set, allocated objects won't necessarily be contiguous in IO memory.
+pub const MEMPOOL_NO_IOVA_CONTIG: u32 = RTE_MEMPOOL_F_NO_IOVA_CONTIG;
 
 /// Mempool is an allocator for fixed sized object.In DPDK, it's identified by name and uses a
 /// mempool handler to store free objects. It provides some other optional services such as
@@ -36,7 +56,7 @@ impl Mempool {
         private_data_size: u32,
         socket_id: i32,
         flags: u32,
-    ) -> Result<Self, Error> {
+    ) -> Result<Self> {
         let name = CString::new(name).unwrap();
         let inner = MempoolInner::create(
             name,
@@ -51,20 +71,20 @@ impl Mempool {
     }
 
     /// Search a mempool from its name.
-    pub fn lookup(name: &str) -> Result<Self, Error> {
+    pub fn lookup(name: &str) -> Result<Self> {
         let name = CString::new(name).unwrap();
         let inner = MempoolInner::lookup(name)?;
         Ok(Self { inner })
     }
 
     /// Get mempool from object.
-    pub fn from_object(obj: &impl MempoolObj) -> Result<Self, Error> {
+    pub fn from_object(obj: &impl MempoolObj) -> Result<Self> {
         let inner = MempoolInner::from_object(obj)?;
         Ok(Self { inner })
     }
 
     /// Get one object from the mempool.
-    pub fn get<T: MempoolObj>(&self) -> Result<T, Error> {
+    pub fn get<T: MempoolObj>(&self) -> Result<T> {
         self.inner.get::<T>()
     }
 
@@ -74,7 +94,7 @@ impl Mempool {
     }
 
     /// Get several objects from the mempool.
-    pub fn get_bulk<T: MempoolObj>(&self, n: u32) -> Result<Vec<T>, Error> {
+    pub fn get_bulk<T: MempoolObj>(&self, n: u32) -> Result<Vec<T>> {
         self.inner.get_bulk(n)
     }
 
@@ -120,8 +140,7 @@ impl Mempool {
 
 /// Mempool
 #[derive(Clone)]
-#[allow(missing_copy_implementations)]
-pub struct MempoolInner {
+pub(crate) struct MempoolInner {
     mp: NonNull<rte_mempool>,
 }
 
@@ -148,8 +167,8 @@ impl Drop for MempoolInner {
 
 #[allow(unsafe_code)]
 impl MempoolInner {
-    pub(crate) fn new(ptr: *mut rte_mempool) -> Result<Arc<Self>, Error> {
-        let mp = NonNull::new(ptr).map_or(Err(Error::NoMem), |mp| Ok(mp))?;
+    pub(crate) fn new(ptr: *mut rte_mempool) -> Result<Arc<Self>> {
+        let mp = NonNull::new(ptr).map_or_else(|| Err(Error::from_errno()), |mp| Ok(mp))?;
         let mp = Arc::new(Self { mp });
         assert!(MEMPOOLS
             .lock()
@@ -168,7 +187,7 @@ impl MempoolInner {
         private_data_size: u32,
         socket_id: i32,
         flags: u32,
-    ) -> Result<Arc<Self>, Error> {
+    ) -> Result<Arc<Self>> {
         // TODO: flags
         let ptr = unsafe {
             rte_mempool_create(
@@ -189,48 +208,42 @@ impl MempoolInner {
     }
 
     #[inline(always)]
-    fn lookup(name: CString) -> Result<Arc<Self>, Error> {
+    fn lookup(name: CString) -> Result<Arc<Self>> {
         let ptr = unsafe { rte_mempool_lookup(name.as_ptr()) };
+        if ptr.is_null() {
+            return Err(Error::from_errno());
+        }
         MEMPOOLS
             .lock()
             .unwrap()
             .get(&(ptr as usize))
             .map(|weak| weak.upgrade().unwrap())
-            .map_or(Err(Error::NotExist), |mp| Ok(mp))
+            .map_or(Err(Error::Unknown), |mp| Ok(mp))
     }
 
     #[inline(always)]
-    fn from_object(obj: &impl MempoolObj) -> Result<Arc<Self>, Error> {
+    fn from_object(obj: &impl MempoolObj) -> Result<Arc<Self>> {
         let ptr = unsafe { rte_mempool_from_obj(obj.as_c_void()) };
+        if ptr.is_null() {
+            return Err(Error::from_errno());
+        }
         MEMPOOLS
             .lock()
             .unwrap()
             .get(&(ptr as usize))
             .map(|weak| weak.upgrade().unwrap())
-            .map_or(Err(Error::NotExist), |mp| Ok(mp))
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    fn obj_iter(&self, f: rte_mempool_obj_cb_t, args: *mut c_void) {
-        let _ = unsafe { rte_mempool_obj_iter(self.mp.as_ptr(), f, args) };
-    }
-
-    #[allow(dead_code)]
-    #[inline(always)]
-    fn mem_iter(&self, f: rte_mempool_mem_cb_t, args: *mut c_void) {
-        let _ = unsafe { rte_mempool_mem_iter(self.mp.as_ptr(), f, args) };
+            .map_or(Err(Error::Unknown), |mp| Ok(mp))
     }
 
     /// Put an object to the mempool.
     #[inline(always)]
-    pub fn put(&self, obj: impl MempoolObj) {
+    fn put(&self, obj: impl MempoolObj) {
         self.put_bulk(vec![obj], 1);
     }
 
     /// Put several objects back to the mempool.
     #[inline(always)]
-    pub fn put_bulk(&self, objs: Vec<impl MempoolObj>, n: u32) {
+    fn put_bulk(&self, objs: Vec<impl MempoolObj>, n: u32) {
         let mut obj_table = objs.iter().map(|obj| obj.as_c_void()).collect::<Vec<_>>();
         #[allow(unsafe_code)]
         unsafe {
@@ -240,17 +253,17 @@ impl MempoolInner {
 
     /// Get an object from the mempool.
     #[inline(always)]
-    pub fn get<T: MempoolObj>(&self) -> Result<T, Error> {
+    fn get<T: MempoolObj>(&self) -> Result<T> {
         let mut obj = MaybeUninit::<T>::uninit();
         unsafe {
             let errno = rte_mempool_get(self.mp.as_ptr(), obj.as_mut_ptr() as *mut *mut c_void);
-            Error::from_errno(errno)?;
+            Error::from_ret(errno)?;
             Ok(obj.assume_init())
         }
     }
 
     #[inline(always)]
-    fn get_bulk<T: MempoolObj>(&self, n: u32) -> Result<Vec<T>, Error> {
+    fn get_bulk<T: MempoolObj>(&self, n: u32) -> Result<Vec<T>> {
         let mut objs = (0..n)
             .map(|_| MaybeUninit::<T>::uninit())
             .collect::<Vec<_>>();
@@ -259,7 +272,7 @@ impl MempoolInner {
             .map(|obj| obj.as_mut_ptr() as *mut c_void)
             .collect::<Vec<_>>();
         let errno = unsafe { rte_mempool_get_bulk(self.mp.as_ptr(), obj_table.as_mut_ptr(), n) };
-        Error::from_errno(errno)?;
+        Error::from_ret(errno)?;
         Ok(objs
             .into_iter()
             .map(|obj| unsafe { obj.assume_init() })
@@ -268,7 +281,7 @@ impl MempoolInner {
 
     #[inline(always)]
     fn name(&self) -> CString {
-        unsafe { CString::from_raw((*self.mp.as_ptr()).name.as_mut_ptr()) }
+        unsafe { CString::from_raw((*self.mp.as_ptr()).name.as_mut_ptr()) } // BUG
     }
 
     #[inline(always)]
@@ -300,4 +313,6 @@ impl MempoolInner {
 pub trait MempoolObj: Sized {
     /// Transform objects into C pointers.
     fn as_c_void(&self) -> *mut c_void;
+    /// Build an object from C pointer.
+    fn from_c_void(ptr: *mut c_void) -> Self;
 }

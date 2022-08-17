@@ -1,6 +1,6 @@
 //! txbuffer
 use crate::mbuf::*;
-use crate::Error;
+use crate::{Error, Result};
 use dpdk_sys::*;
 use std::{
     ffi::{c_void, CString},
@@ -18,17 +18,17 @@ pub struct TxBuffer {
 #[allow(unsafe_code)]
 impl TxBuffer {
     /// Allocate a TxBuffer.
-    pub fn alloc() -> Result<Self, Error> {
+    pub fn alloc() -> Result<Self> {
         let ty = CString::new("tx_buffer").unwrap();
         let ptr = unsafe {
             rte_zmalloc(ty.as_ptr(), mem::size_of::<rte_eth_dev_tx_buffer>(), 0)
                 as *mut rte_eth_dev_tx_buffer
         };
-        NonNull::new(ptr).map_or_else(|| Err(Error::NoMem), |tb| Ok(Self { tb }))
+        NonNull::new(ptr).map_or_else(|| Err(Error::from_errno()), |tb| Ok(Self { tb }))
     }
 
     /// Allocate a TxBuffer on the given socket.
-    pub fn alloc_socket(socket: i32) -> Result<Self, Error> {
+    pub fn alloc_socket(socket: i32) -> Result<Self> {
         let ty = CString::new("tx_buffer").unwrap();
         let ptr = unsafe {
             rte_zmalloc_socket(
@@ -38,13 +38,13 @@ impl TxBuffer {
                 socket,
             ) as *mut rte_eth_dev_tx_buffer
         };
-        NonNull::new(ptr).map_or_else(|| Err(Error::NoMem), |tb| Ok(Self { tb }))
+        NonNull::new(ptr).map_or_else(|| Err(Error::from_errno()), |tb| Ok(Self { tb }))
     }
 
     /// Initialize default values for buffered transmitting.
-    pub fn init(&mut self, size: u16) -> Result<(), Error> {
+    pub fn init(&mut self, size: u16) -> Result<()> {
         let errno = unsafe { rte_eth_tx_buffer_init(self.as_ptr(), size) };
-        Error::from_errno(errno)?;
+        Error::from_ret(errno)?;
         Ok(())
     }
 

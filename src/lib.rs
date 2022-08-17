@@ -123,5 +123,5 @@ pub mod tx_buffer;
 
 mod errno;
 
-pub use errno::*;
 pub use dpdk_sys::macros::*;
+pub use errno::*;
