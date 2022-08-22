@@ -22,21 +22,25 @@ impl Eal {
     /// This function can be called to indicate that multiprocess won't be used for the rest of
     /// the application life.
     pub fn disable_mp(&self) -> bool {
+        // SAFETY: ffi
         unsafe { rte_mp_disable() }
     }
 
     /// Whether EAL is using hugepages.
     pub fn has_hugepages(&self) -> bool {
+        // SAFETY: ffi
         unsafe { rte_eal_has_hugepages() != 0 }
     }
 
     /// Whether EAL is using PCI bus. Disabled by –no-pci option.
     pub fn has_pci(&self) -> bool {
+        // SAFETY: ffi
         unsafe { rte_eal_has_pci() != 0 }
     }
 
     /// Whether the EAL was asked to create UIO device.
     pub fn uio_created(&self) -> bool {
+        // SAFETY: ffi
         unsafe { rte_eal_create_uio_dev() != 0 }
     }
 
@@ -47,7 +51,9 @@ impl Eal {
 
     /// Get the runtime directory of DPDK
     pub fn runtime_dir(&self) -> PathBuf {
+        // SAFETY: ffi
         let ptr = unsafe { rte_eal_get_runtime_dir() };
+        // SAFETY: read C string
         let cs = unsafe { CString::from_raw(ptr as _) };
         PathBuf::from(cs.into_string().unwrap())
     }
@@ -55,6 +61,7 @@ impl Eal {
 
 impl Drop for Eal {
     fn drop(&mut self) {
+        // SAFETY: ffi
         #[allow(unsafe_code)]
         let errno = unsafe { rte_eal_cleanup() };
         Error::parse_err(errno);
@@ -197,6 +204,7 @@ impl Builder {
             .iter()
             .map(|s| s.as_ptr() as *mut c_char)
             .collect::<Vec<_>>();
+        // SAFETY: ffi
         #[allow(unsafe_code)]
         let ret = unsafe { rte_eal_init(pargs.len() as _, pargs.as_mut_ptr()) };
         if ret < 0 {

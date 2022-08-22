@@ -144,9 +144,11 @@ pub(crate) struct MempoolInner {
     mp: NonNull<rte_mempool>,
 }
 
+// SAFETY: mempool can be globally accessed
 #[allow(unsafe_code)]
 unsafe impl Send for MempoolInner {}
 
+// SAFETY: mempool can be globally accessed
 #[allow(unsafe_code)]
 unsafe impl Sync for MempoolInner {}
 
@@ -160,6 +162,7 @@ impl Drop for MempoolInner {
     fn drop(&mut self) {
         #[allow(unsafe_code)]
         unsafe {
+            // SAFETY: ffi
             rte_mempool_free(self.mp.as_ptr());
         }
     }
@@ -188,7 +191,7 @@ impl MempoolInner {
         socket_id: i32,
         flags: u32,
     ) -> Result<Arc<Self>> {
-        // TODO: flags
+        // SAFETY: ffi
         let ptr = unsafe {
             rte_mempool_create(
                 name.as_ptr(),
@@ -209,6 +212,7 @@ impl MempoolInner {
 
     #[inline(always)]
     fn lookup(name: CString) -> Result<Arc<Self>> {
+        // SAFETY: ffi
         let ptr = unsafe { rte_mempool_lookup(name.as_ptr()) };
         if ptr.is_null() {
             return Err(Error::from_errno());
@@ -223,6 +227,7 @@ impl MempoolInner {
 
     #[inline(always)]
     fn from_object(obj: &impl MempoolObj) -> Result<Arc<Self>> {
+        // SAFETY: ffi
         let ptr = unsafe { rte_mempool_from_obj(obj.as_c_void()) };
         if ptr.is_null() {
             return Err(Error::from_errno());
@@ -245,6 +250,7 @@ impl MempoolInner {
     #[inline(always)]
     fn put_bulk(&self, objs: Vec<impl MempoolObj>, n: u32) {
         let mut obj_table = objs.iter().map(|obj| obj.as_c_void()).collect::<Vec<_>>();
+        // SAFETY: ffi
         #[allow(unsafe_code)]
         unsafe {
             rte_mempool_put_bulk(self.mp.as_ptr(), obj_table.as_mut_ptr(), n);
@@ -255,11 +261,12 @@ impl MempoolInner {
     #[inline(always)]
     fn get<T: MempoolObj>(&self) -> Result<T> {
         let mut obj = MaybeUninit::<T>::uninit();
-        unsafe {
-            let errno = rte_mempool_get(self.mp.as_ptr(), obj.as_mut_ptr() as *mut *mut c_void);
-            Error::from_ret(errno)?;
-            Ok(obj.assume_init())
-        }
+        // SAFETY: ffi
+        let errno =
+            unsafe { rte_mempool_get(self.mp.as_ptr(), obj.as_mut_ptr() as *mut *mut c_void) };
+        Error::from_ret(errno)?;
+        // SAFETY: objs are initialized
+        unsafe { Ok(obj.assume_init()) }
     }
 
     #[inline(always)]
@@ -271,8 +278,10 @@ impl MempoolInner {
             .iter_mut()
             .map(|obj| obj.as_mut_ptr() as *mut c_void)
             .collect::<Vec<_>>();
+        // SAFETY: ffi
         let errno = unsafe { rte_mempool_get_bulk(self.mp.as_ptr(), obj_table.as_mut_ptr(), n) };
         Error::from_ret(errno)?;
+        // SAFETY: objs are initialized
         Ok(objs
             .into_iter()
             .map(|obj| unsafe { obj.assume_init() })
@@ -281,16 +290,19 @@ impl MempoolInner {
 
     #[inline(always)]
     fn name(&self) -> CString {
+        // SAFETY: read C string
         unsafe { CString::from_raw((*self.mp.as_ptr()).name.as_mut_ptr()) } // BUG
     }
 
     #[inline(always)]
     fn avail_count(&self) -> u32 {
+        // SAFETY: ffi
         unsafe { rte_mempool_avail_count(self.mp.as_ptr()) }
     }
 
     #[inline(always)]
     fn in_use_count(&self) -> u32 {
+        // SAFETY: ffi
         unsafe { rte_mempool_in_use_count(self.mp.as_ptr()) }
     }
 
@@ -301,6 +313,7 @@ impl MempoolInner {
 
     #[inline(always)]
     fn full(&self) -> bool {
+        // SAFETY: the *rte_mempool pointer is valid
         unsafe { self.avail_count() == self.mp.as_ref().size }
     }
 

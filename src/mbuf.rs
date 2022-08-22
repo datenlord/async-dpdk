@@ -34,6 +34,7 @@ impl Mbuf {
     /// Allocate an uninitialized mbuf from mempool.
     #[inline]
     pub fn new(mp: &Mempool) -> Result<Self> {
+        // SAFETY: ffi
         let ptr = unsafe { rte_pktmbuf_alloc(mp.as_ptr()) };
         Self::new_with_ptr(ptr)
     }
@@ -47,14 +48,13 @@ impl Mbuf {
             .iter_mut()
             .map(|mbuf| mbuf.as_mut_ptr())
             .collect::<Vec<_>>();
+        // SAFETY: ffi
         let errno = unsafe { rte_pktmbuf_alloc_bulk(mp.as_ptr(), ptrs.as_mut_ptr(), n) };
         Error::from_ret(errno)?;
         let mut v = vec![];
         for mut mbuf in mbufs {
             let ptr = mbuf.as_mut_ptr();
-            // unsafe {
-            //     rte_pktmbuf_init(mp.as_ptr(), ptr::null_mut(), ptr as *mut _, 0);
-            // }
+            // SAFETY: mbufs initialized in `rte_pktmbuf_alloc_bulk`
             let _mbuf = unsafe { mbuf.assume_init() }; // XXX
             v.push(Self::new_with_ptr(ptr)?)
         }
@@ -66,6 +66,7 @@ impl Mbuf {
     /// This function creates and initializes a packet mbuf pool.
     pub fn create_mp(n: u32, cache_size: u32, socket_id: i32) -> Result<Mempool> {
         let name = CString::new("mbuf pool").unwrap();
+        // SAFETY: ffi
         let ptr = unsafe {
             rte_pktmbuf_pool_create(
                 name.as_ptr(),
@@ -82,34 +83,40 @@ impl Mbuf {
 
     /// Return the mbuf owning the data buffer address of an indirect mbuf.
     pub fn from_indirect(mi: &Mbuf) -> Result<Self> {
+        // SAFETY: ffi
         let ptr = unsafe { rte_mbuf_from_indirect(mi.as_ptr()) };
         Self::new_with_ptr(ptr)
     }
 
     /// Get the data length of a mbuf.
     pub fn data_len(&self) -> u32 {
+        // SAFETY: the *rte_mbuf pointer is checked at initialization and never changes
         unsafe { (*self.as_ptr()).data_len as u32 }
     }
 
     /// Get the packet length of a mbuf.
     pub fn pkt_len(&self) -> u32 {
+        // SAFETY: the *rte_mbuf pointer is checked at initialization and never changes
         unsafe { (*self.as_ptr()).pkt_len }
     }
 
     /// Get the number of segments of a mbuf.
     pub fn num_segs(&self) -> u32 {
+        // SAFETY: the *rte_mbuf pointer is checked at initialization and never changes
         unsafe { (*self.as_ptr()).nb_segs as u32 }
     }
 
     /// Get the headroom in a packet mbuf.
     #[inline]
     pub fn headroom(&self) -> u32 {
+        // SAFETY: ffi
         unsafe { rte_pktmbuf_headroom(self.as_ptr()) as u32 }
     }
 
     /// Get the tailroom of a packet mbuf.
     #[inline]
     pub fn tailroom(&self) -> u32 {
+        // SAFETY: ffi
         unsafe { rte_pktmbuf_tailroom(self.as_ptr()) as u32 }
     }
 
@@ -120,6 +127,7 @@ impl Mbuf {
     ///  - Attaches newly created mbuf to the segment. Then updates pkt_len and nb_segs
     ///    of the "clone" packet mbuf to match values from the original packet mbuf.
     pub fn pktmbuf_clone(&self, mp: &Mempool) -> Result<Self> {
+        // SAFETY: ffi
         let ptr = unsafe { rte_pktmbuf_clone(self.as_ptr(), mp.as_ptr()) };
         Self::new_with_ptr(ptr)
     }
@@ -129,6 +137,7 @@ impl Mbuf {
     /// Copies all the data from a given packet mbuf to a newly allocated set of mbufs.
     /// The private data are is not copied.
     pub fn pktmbuf_copy(&self, mp: &Mempool, offset: u32, length: u32) -> Result<Self> {
+        // SAFETY: ffi
         let ptr = unsafe { rte_pktmbuf_copy(self.as_ptr(), mp.as_ptr(), offset, length) };
         Self::new_with_ptr(ptr)
     }
@@ -136,12 +145,14 @@ impl Mbuf {
     /// Whether this mbuf is indirect
     #[inline]
     pub fn is_indirect(&self) -> bool {
+        // SAFETY: the *rte_mbuf pointer is checked at initialization and never changes
         unsafe { (*self.as_ptr()).ol_flags & RTE_MBUF_F_INDIRECT != 0 }
     }
 
     /// Test if mbuf data is contiguous (i.e. with only one segment).
     #[inline]
     pub fn is_contiguous(&self) -> bool {
+        // SAFETY: the *rte_mbuf pointer is checked at initialization and never changes
         unsafe { (*self.as_ptr()).nb_segs == 1 }
     }
 
@@ -153,6 +164,7 @@ impl Mbuf {
     #[inline]
     pub fn data_slice(&self) -> &[u8] {
         let m = self.as_ptr();
+        // SAFETY: ffi; memory is initialized and valid
         unsafe {
             let data = rte_mbuf_buf_addr(m, (*m).pool).add((*m).data_off as _);
             slice::from_raw_parts(data as *const u8, (*m).data_len as _)
@@ -163,6 +175,7 @@ impl Mbuf {
     #[inline]
     pub fn data_slice_mut(&mut self) -> &mut [u8] {
         let m = self.as_ptr();
+        // SAFETY: ffi; memory is initialized and valid
         unsafe {
             let data = rte_mbuf_buf_addr(m, (*m).pool).add((*m).data_off as _);
             slice::from_raw_parts_mut(data as *mut u8, (*m).data_len as _)
@@ -172,12 +185,14 @@ impl Mbuf {
     /// Attach packet mbuf to another packet mbuf, thus become an indirect mbuf.
     #[inline]
     pub fn attach(&mut self, mb: &Mbuf) {
+        // SAFETY: ffi
         unsafe { rte_pktmbuf_attach(self.as_ptr(), mb.as_ptr()) };
     }
 
     /// Detach a packet mbuf from external buffer or direct buffer.
     #[inline]
     pub fn detach(&mut self) {
+        // SAFETY: ffi
         unsafe { rte_pktmbuf_detach(self.as_ptr()) };
     }
 
@@ -187,13 +202,13 @@ impl Mbuf {
     /// If there is not enough headroom in the first segment, the function will return NULL,
     /// without modifying the mbuf.
     pub fn prepend(&mut self, len: usize) -> Result<&mut [u8]> {
-        unsafe {
-            let data = rte_pktmbuf_prepend(self.as_ptr(), len as _) as *mut u8;
-            if data.is_null() {
-                return Err(Error::InvalidArg);
-            }
-            Ok(slice::from_raw_parts_mut(data, len))
+        // SAFETY: ffi
+        let data = unsafe { rte_pktmbuf_prepend(self.as_ptr(), len as _) as *mut u8 };
+        if data.is_null() {
+            return Err(Error::InvalidArg);
         }
+        // SAFETY: memory is initialzed
+        unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
     }
 
     /// Append len bytes to an mbuf.
@@ -202,13 +217,13 @@ impl Mbuf {
     /// data. If there is not enough tailroom in the last segment, the function will return
     /// NULL, without modifying the mbuf.
     pub fn append(&mut self, len: usize) -> Result<&mut [u8]> {
-        unsafe {
-            let data = rte_pktmbuf_append(self.as_ptr(), len as _) as *mut u8;
-            if data.is_null() {
-                return Err(Error::InvalidArg);
-            }
-            Ok(slice::from_raw_parts_mut(data, len))
+        // SAFETY: ffi
+        let data = unsafe { rte_pktmbuf_append(self.as_ptr(), len as _) as *mut u8 };
+        if data.is_null() {
+            return Err(Error::InvalidArg);
         }
+        // SAFETY: memory is initialzed
+        unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
     }
 
     /// Remove len bytes at the beginning of an mbuf.
@@ -217,13 +232,12 @@ impl Mbuf {
     /// than the length of the first segment, then the function will fail and return NULL,
     /// without modifying the mbuf.
     pub fn adj(&mut self, len: usize) -> Result<()> {
-        unsafe {
-            let data = rte_pktmbuf_adj(self.as_ptr(), len as _) as *mut u8;
-            if data.is_null() {
-                Err(Error::InvalidArg)
-            } else {
-                Ok(())
-            }
+        // SAFETY: ffi
+        let data = unsafe { rte_pktmbuf_adj(self.as_ptr(), len as _) as *mut u8 };
+        if data.is_null() {
+            Err(Error::InvalidArg)
+        } else {
+            Ok(())
         }
     }
 
@@ -232,6 +246,7 @@ impl Mbuf {
     /// If the length is greater than the length of the last segment, the function will fail
     /// and return -1 without modifying the mbuf.
     pub fn trim(&mut self, len: usize) -> Result<()> {
+        // SAFETY: ffi
         let res = unsafe { rte_pktmbuf_trim(self.as_ptr(), len as _) };
         if res == 0 {
             Ok(())
@@ -245,6 +260,7 @@ impl Mbuf {
     /// Note: The implementation will do a linear walk over the segments to find the tail entry.
     /// For cases when there are many segments, it's better to chain the entries manually.
     pub fn chain(&mut self, tail: Mbuf) -> Result<()> {
+        // SAFETY: ffi
         let errno = unsafe { rte_pktmbuf_chain(self.as_ptr(), tail.as_ptr()) };
         Error::from_ret(errno)?;
         Ok(())
@@ -255,6 +271,7 @@ impl Mbuf {
     /// This function moves the mbuf data in the first segment if there is enough tailroom.
     /// The subsequent segments are unchained and freed.
     pub fn linearize(&mut self) -> Result<()> {
+        // SAFETY: ffi
         let ret = unsafe { rte_pktmbuf_linearize(self.as_ptr()) };
         if ret == -1 {
             return Err(Error::from_errno());
@@ -270,6 +287,7 @@ impl Mbuf {
 #[allow(unsafe_code)]
 impl Drop for Mbuf {
     fn drop(&mut self) {
+        // SAFETY: ffi; this pointer is valid
         unsafe { rte_pktmbuf_free(self.as_ptr()) };
     }
 }

@@ -69,6 +69,7 @@ pub enum Error {
 impl Error {
     #[inline]
     pub fn from_errno() -> Error {
+        // SAFETY: read mutable static variable
         #[allow(unsafe_code)]
         let errno = unsafe { errno!() };
         errno.into()
@@ -87,6 +88,7 @@ impl Error {
     #[allow(unsafe_code)]
     pub fn parse_err(errno: c_int) {
         if errno < 0 {
+            // SAFETY: ffi
             unsafe {
                 let msg = rte_strerror(errno);
                 rte_exit(errno, msg);

@@ -20,6 +20,7 @@ impl TxBuffer {
     /// Allocate a TxBuffer.
     pub fn alloc() -> Result<Self> {
         let ty = CString::new("tx_buffer").unwrap();
+        // SAFETY: ffi
         let ptr = unsafe {
             rte_zmalloc(ty.as_ptr(), mem::size_of::<rte_eth_dev_tx_buffer>(), 0)
                 as *mut rte_eth_dev_tx_buffer
@@ -30,6 +31,7 @@ impl TxBuffer {
     /// Allocate a TxBuffer on the given socket.
     pub fn alloc_socket(socket: i32) -> Result<Self> {
         let ty = CString::new("tx_buffer").unwrap();
+        // SAFETY: ffi
         let ptr = unsafe {
             rte_zmalloc_socket(
                 ty.as_ptr(),
@@ -43,6 +45,7 @@ impl TxBuffer {
 
     /// Initialize default values for buffered transmitting.
     pub fn init(&mut self, size: u16) -> Result<()> {
+        // SAFETY: ffi
         let errno = unsafe { rte_eth_tx_buffer_init(self.as_ptr(), size) };
         Error::from_ret(errno)?;
         Ok(())
@@ -55,6 +58,7 @@ impl TxBuffer {
     /// error callback for any unsent packets. Unless explicitly set up otherwise, the default
     /// callback simply frees the unsent packets back to the owning mempool.
     pub fn flush(&mut self, port_id: u16, queue_id: u16) -> u16 {
+        // SAFETY: ffi
         unsafe { rte_eth_tx_buffer_flush(port_id, queue_id, self.as_ptr()) }
     }
 
@@ -68,6 +72,7 @@ impl TxBuffer {
     /// mempool. The function returns the number of packets actually sent i.e. 0 if no buffer
     /// flush occurred, otherwise the number of packets successfully flushed.
     pub fn buffer(&mut self, pkt: &Mbuf, port_id: u16, queue_id: u16) -> u16 {
+        // SAFETY: ffi
         unsafe { rte_eth_tx_buffer(port_id, queue_id, self.as_ptr(), pkt.as_ptr()) }
     }
 
@@ -79,6 +84,7 @@ impl TxBuffer {
 
 impl Drop for TxBuffer {
     fn drop(&mut self) {
+        // SAFETY: ffi
         #[allow(unsafe_code)]
         unsafe {
             rte_free(self.as_ptr() as *mut c_void);

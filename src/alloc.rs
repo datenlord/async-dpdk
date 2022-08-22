@@ -1,10 +1,11 @@
 //! Allocator
 
-use std::{mem, ptr};
 use dpdk_sys::*;
+use std::{mem, ptr};
 
 /// This function allocates memory from the huge-page area of memory. The memory is not cleared.
 pub fn malloc<T: Default>() -> Box<T> {
+    // SAFETY: ffi
     #[allow(unsafe_code)]
     unsafe {
         let ptr = rte_malloc(ptr::null(), mem::size_of::<T>(), 0);
@@ -17,6 +18,7 @@ pub fn malloc<T: Default>() -> Box<T> {
 /// initialised with zeros. In NUMA systems, the memory allocated resides on the same NUMA socket
 /// as the core that calls this function.
 pub fn zmalloc<T: Default>() -> Box<T> {
+    // SAFETY: ffi
     #[allow(unsafe_code)]
     unsafe {
         let ptr = rte_zmalloc(ptr::null(), mem::size_of::<T>(), 0);
@@ -27,6 +29,7 @@ pub fn zmalloc<T: Default>() -> Box<T> {
 
 /// Malloc on specific socket.
 pub fn malloc_socket<T: Default>(socket: i32) -> Box<T> {
+    // SAFETY: ffi
     #[allow(unsafe_code)]
     unsafe {
         let ptr = rte_malloc_socket(ptr::null(), mem::size_of::<T>(), 0, socket);
@@ -37,6 +40,7 @@ pub fn malloc_socket<T: Default>(socket: i32) -> Box<T> {
 
 /// Zmalloc on specific socket.
 pub fn zmalloc_socket<T: Default>(socket: i32) -> Box<T> {
+    // SAFETY: ffi
     #[allow(unsafe_code)]
     unsafe {
         let ptr = rte_zmalloc_socket(ptr::null(), mem::size_of::<T>(), 0, socket);
@@ -52,6 +56,7 @@ pub fn zmalloc_socket<T: Default>(socket: i32) -> Box<T> {
 /// If the pointer is NULL, the function does nothing.
 pub fn free<T>(obj: Box<T>) {
     let ptr = Box::into_raw(obj);
+    // SAFETY: ffi
     #[allow(unsafe_code)]
     unsafe {
         rte_free(ptr.cast());

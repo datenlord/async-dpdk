@@ -10,7 +10,6 @@ use async_dpdk::{
 // static INIT: Once = Once::new();
 // static EAL: Option<Eal> = None;
 
-
 mod mbuf {
     use super::*;
     use async_dpdk::mbuf::Mbuf;
