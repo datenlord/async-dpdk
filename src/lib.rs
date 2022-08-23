@@ -116,6 +116,7 @@ use std::os::raw::*;
 
 pub mod alloc;
 pub mod eal;
+pub mod eth_dev;
 pub mod lcore;
 pub mod mbuf;
 pub mod mempool;

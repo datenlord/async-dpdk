@@ -329,3 +329,34 @@ pub trait MempoolObj: Sized {
     /// Build an object from C pointer.
     fn from_c_void(ptr: *mut c_void) -> Self;
 }
+
+#[cfg(test)]
+mod test {
+    use crate::eal::{self, IovaMode};
+    use crate::lcore;
+    use crate::mempool::{self, Mempool};
+
+    #[test]
+    fn test() {
+        let _eal = eal::Builder::new().iova_mode(IovaMode::VA).build().unwrap();
+
+        let mp = Mempool::create(
+            "mempool",
+            64,
+            16,
+            0,
+            0,
+            lcore::socket_id() as _,
+            mempool::MEMPOOL_SINGLE_CONSUMER | mempool::MEMPOOL_SINGLE_PRODUCER,
+        )
+        .unwrap();
+        assert!(mp.is_full());
+        assert_eq!(mp.in_use(), 0);
+        assert_eq!(mp.available(), 64);
+
+        let mp1 = Mempool::lookup("mempool").unwrap();
+        assert!(mp1.is_full());
+        assert_eq!(mp1.in_use(), 0);
+        assert_eq!(mp1.available(), 64);
+    }
+}

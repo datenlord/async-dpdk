@@ -27,7 +27,7 @@ pub struct Mbuf {
 
 #[allow(unsafe_code)]
 impl Mbuf {
-    fn new_with_ptr(ptr: *mut rte_mbuf) -> Result<Self> {
+    pub(crate) fn new_with_ptr(ptr: *mut rte_mbuf) -> Result<Self> {
         NonNull::new(ptr).map_or_else(|| Err(Error::from_errno()), |mb| Ok(Self { mb }))
     }
 
@@ -289,5 +289,43 @@ impl Drop for Mbuf {
     fn drop(&mut self) {
         // SAFETY: ffi; this pointer is valid
         unsafe { rte_pktmbuf_free(self.as_ptr()) };
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use crate::eal::{self, IovaMode};
+    use crate::lcore;
+    use crate::mbuf::Mbuf;
+
+    #[test]
+    fn test() {
+        let _eal = eal::Builder::new().iova_mode(IovaMode::VA).build().unwrap();
+
+        // Create a packet mempool.
+        let mp = Mbuf::create_mp(10, 0, lcore::socket_id() as _).unwrap();
+        let mut mbuf = Mbuf::new(&mp).unwrap();
+        assert!(mbuf.is_contiguous());
+        assert_eq!(mbuf.data_len(), 0);
+
+        // Read and write from mbuf.
+        let data = mbuf.append(10).unwrap();
+        data.copy_from_slice(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        assert_eq!(mbuf.data_len(), 10);
+        assert_eq!(mbuf.data_slice(), &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+        mbuf.trim(5).unwrap();
+        assert_eq!(mbuf.data_len(), 5);
+        assert_eq!(mbuf.data_slice(), &[0, 1, 2, 3, 4]);
+
+        // Mbuf chaining.
+        let mut mbuf1 = Mbuf::new(&mp).unwrap();
+        let _ = mbuf1.append(5).unwrap();
+        mbuf.chain(mbuf1).unwrap();
+        assert_eq!(mbuf.num_segs(), 2);
+        assert_eq!(mbuf.pkt_len(), 10);
+
+        // Indirect mbuf.
+        let mbuf2 = mbuf.pktmbuf_clone(&mp).unwrap();
+        assert_eq!(mbuf2.data_slice(), &[0, 1, 2, 3, 4]);
     }
 }

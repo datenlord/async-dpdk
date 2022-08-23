@@ -62,3 +62,26 @@ pub fn free<T>(obj: Box<T>) {
         rte_free(ptr.cast());
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::alloc;
+    use crate::eal::{self, IovaMode};
+
+    #[test]
+    fn test() {
+        #[derive(Default)]
+        struct Test {
+            x: i32,
+            y: i64,
+        }
+
+        let _eal = eal::Builder::new().iova_mode(IovaMode::VA).build().unwrap();
+
+        let t = alloc::malloc::<Test>();
+        assert_eq!(t.x, 0);
+        assert_eq!(t.y, 0);
+
+        alloc::free(t);
+    }
+}
