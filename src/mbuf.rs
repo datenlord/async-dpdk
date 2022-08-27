@@ -1,11 +1,14 @@
 //! mbuf
 
 use dpdk_sys::*;
-use std::{ffi::CString, mem::MaybeUninit, ptr::NonNull, slice};
+use std::mem;
+use std::{mem::MaybeUninit, ptr::NonNull, slice};
 
+use crate::eth_dev::EthAddr;
 use crate::mempool::{Mempool, MempoolInner};
 use crate::{Error, Result};
 
+///
 /// The mbuf library provides the ability to allocate and free buffers (mbufs) that may be
 /// used by the DPDK application to store message buffers. The message buffers are stored
 /// in a mempool, using the Mempool Library.
@@ -64,12 +67,11 @@ impl Mbuf {
     /// Create a mbuf pool.
     ///
     /// This function creates and initializes a packet mbuf pool.
-    pub fn create_mp(n: u32, cache_size: u32, socket_id: i32) -> Result<Mempool> {
-        let name = CString::new("mbuf pool").unwrap();
+    pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: i32) -> Result<Mempool> {
         // SAFETY: ffi
         let ptr = unsafe {
             rte_pktmbuf_pool_create(
-                name.as_ptr(),
+                cstring!(name),
                 n,
                 cache_size,
                 0,
@@ -182,18 +184,38 @@ impl Mbuf {
         }
     }
 
-    /// Attach packet mbuf to another packet mbuf, thus become an indirect mbuf.
+    /// Init an Ethernet packet.
     #[inline]
-    pub fn attach(&mut self, mb: &Mbuf) {
-        // SAFETY: ffi
-        unsafe { rte_pktmbuf_attach(self.as_ptr(), mb.as_ptr()) };
+    pub fn eth_init(&mut self) -> Result<&mut rte_ether_hdr> {
+        let data = self.append(mem::size_of::<rte_ether_hdr>())?;
+        let hdr = unsafe { &mut *(data.as_mut_ptr() as *mut rte_ether_hdr) };
+        Ok(hdr)
     }
 
-    /// Detach a packet mbuf from external buffer or direct buffer.
-    #[inline]
-    pub fn detach(&mut self) {
-        // SAFETY: ffi
-        unsafe { rte_pktmbuf_detach(self.as_ptr()) };
+    /// Set Ethernet src addr.
+    pub fn set_eth_src(&mut self, src: &EthAddr) -> Result<()> {
+        if self.data_len() < mem::size_of::<rte_ether_hdr>() as u32 {
+            return Err(Error::InvalidArg);
+        }
+        let data = self.data_slice_mut();
+        let ether_hdr = data.as_mut_ptr() as *mut rte_ether_hdr;
+        unsafe {
+            rte_ether_addr_copy(&**src, &mut (*ether_hdr).src_addr);
+        }
+        Ok(())
+    }
+
+    /// Set Ethernet dst addr.
+    pub fn set_eth_dst(&mut self, dst: &EthAddr) -> Result<()> {
+        if self.data_len() < mem::size_of::<rte_ether_hdr>() as u32 {
+            return Err(Error::InvalidArg);
+        }
+        let data = self.data_slice_mut();
+        let ether_hdr = data.as_mut_ptr() as *mut rte_ether_hdr;
+        unsafe {
+            rte_ether_addr_copy(&**dst, &mut (*ether_hdr).dst_addr);
+        }
+        Ok(())
     }
 
     /// Prepend len bytes to an mbuf data area.
@@ -284,6 +306,12 @@ impl Mbuf {
     }
 }
 
+// SAFETY: I don't know...
+#[allow(unsafe_code)]
+unsafe impl Send for Mbuf {}
+#[allow(unsafe_code)]
+unsafe impl Sync for Mbuf {}
+
 #[allow(unsafe_code)]
 impl Drop for Mbuf {
     fn drop(&mut self) {
@@ -303,7 +331,7 @@ mod test {
         let _eal = eal::Builder::new().iova_mode(IovaMode::VA).build().unwrap();
 
         // Create a packet mempool.
-        let mp = Mbuf::create_mp(10, 0, lcore::socket_id() as _).unwrap();
+        let mp = Mbuf::create_mp("test", 10, 0, lcore::socket_id() as _).unwrap();
         let mut mbuf = Mbuf::new(&mp).unwrap();
         assert!(mbuf.is_contiguous());
         assert_eq!(mbuf.data_len(), 0);

@@ -10,6 +10,7 @@ dpdk-sys = "0.1"
 lazy_static = "1.4"
 libc = "0.2"
 thiserror = "1.0"
+tokio = { version = "1.20", features = ["sync", "rt", "time", "macros", "rt-multi-thread"] }
 
 [patch.crates-io]
 dpdk-sys = { path = "../dpdk-sys" }

@@ -1,8 +1,9 @@
 //! EAL (Environment Abstract Layer)
 
-use std::path::PathBuf;
-
-use crate::{Error, *};
+use crate::{Error, Result};
+use dpdk_sys::*;
+use std::ffi::CString;
+use std::{os::raw::c_char, path::PathBuf};
 
 /// EAL
 #[derive(Debug)]

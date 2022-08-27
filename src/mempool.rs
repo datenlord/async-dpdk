@@ -1,18 +1,16 @@
 //! mempool wrapper
 
-use crate::CString;
 use crate::{Error, Result};
 use dpdk_sys::*;
 use lazy_static::lazy_static;
 use std::collections::HashMap;
+use std::ffi::CString;
 use std::fmt::Debug;
 use std::mem::MaybeUninit;
 use std::os::raw::c_void;
+use std::ptr::{self, NonNull};
 use std::sync::Mutex;
-use std::{
-    ptr::{self, NonNull},
-    sync::{Arc, Weak},
-};
+use std::sync::{Arc, Weak};
 
 lazy_static! {
     static ref MEMPOOLS: Mutex<HashMap<usize, Weak<MempoolInner>>> = Default::default();

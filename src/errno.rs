@@ -79,8 +79,8 @@ impl Error {
         let errno = -errno;
         match errno {
             0 => Ok(()),
-            e if e < 0 => Err(e.into()),
-            _ => unreachable!(),
+            e if e > 0 => Err(e.into()),
+            e => unreachable!("errno = {}", e),
         }
     }
 

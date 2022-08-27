@@ -110,19 +110,16 @@
     clippy::multiple_crate_versions, // caused by the dependency, can't be fixed
 )]
 
-use dpdk_sys::*;
-use std::ffi::CString;
-use std::os::raw::*;
+pub use dpdk_sys::{eth_foreach_dev, lcore_foreach, lcore_foreach_worker};
 
 pub mod alloc;
+pub mod buffer;
 pub mod eal;
 pub mod eth_dev;
 pub mod lcore;
 pub mod mbuf;
 pub mod mempool;
-pub mod tx_buffer;
 
 mod errno;
 
-pub use dpdk_sys::macros::*;
 pub use errno::*;

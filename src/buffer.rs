@@ -52,6 +52,12 @@ impl TxBuffer {
     }
 }
 
+#[allow(unsafe_code)]
+unsafe impl Send for TxBuffer {}
+
+#[allow(unsafe_code)]
+unsafe impl Sync for TxBuffer {}
+
 impl Drop for TxBuffer {
     fn drop(&mut self) {
         // SAFETY: ffi

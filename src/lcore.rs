@@ -1,7 +1,7 @@
 //! An module handling lcore.
 
 #![allow(unsafe_code)]
-use crate::*;
+use dpdk_sys::*;
 
 /// Lcore role.
 #[repr(u32)]
