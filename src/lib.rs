@@ -116,9 +116,11 @@ pub mod alloc;
 pub mod buffer;
 pub mod eal;
 pub mod eth_dev;
+pub mod ether;
 pub mod lcore;
 pub mod mbuf;
 pub mod mempool;
+pub mod protocol;
 
 mod errno;
 

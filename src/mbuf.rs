@@ -4,7 +4,6 @@ use dpdk_sys::*;
 use std::mem;
 use std::{mem::MaybeUninit, ptr::NonNull, slice};
 
-use crate::eth_dev::EthAddr;
 use crate::mempool::{Mempool, MempoolInner};
 use crate::{Error, Result};
 
@@ -67,7 +66,7 @@ impl Mbuf {
     /// Create a mbuf pool.
     ///
     /// This function creates and initializes a packet mbuf pool.
-    pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: i32) -> Result<Mempool> {
+    pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: u32) -> Result<Mempool> {
         // SAFETY: ffi
         let ptr = unsafe {
             rte_pktmbuf_pool_create(
@@ -76,7 +75,7 @@ impl Mbuf {
                 cache_size,
                 0,
                 RTE_MBUF_DEFAULT_BUF_SIZE as u16,
-                socket_id,
+                socket_id as _,
             )
         };
         let inner = MempoolInner::new(ptr)?;
@@ -91,15 +90,15 @@ impl Mbuf {
     }
 
     /// Get the data length of a mbuf.
-    pub fn data_len(&self) -> u32 {
+    pub fn data_len(&self) -> usize {
         // SAFETY: the *rte_mbuf pointer is checked at initialization and never changes
-        unsafe { (*self.as_ptr()).data_len as u32 }
+        unsafe { (*self.as_ptr()).data_len as usize }
     }
 
     /// Get the packet length of a mbuf.
-    pub fn pkt_len(&self) -> u32 {
+    pub fn pkt_len(&self) -> usize {
         // SAFETY: the *rte_mbuf pointer is checked at initialization and never changes
-        unsafe { (*self.as_ptr()).pkt_len }
+        unsafe { (*self.as_ptr()).pkt_len as usize }
     }
 
     /// Get the number of segments of a mbuf.
@@ -110,16 +109,16 @@ impl Mbuf {
 
     /// Get the headroom in a packet mbuf.
     #[inline]
-    pub fn headroom(&self) -> u32 {
+    pub fn headroom(&self) -> usize {
         // SAFETY: ffi
-        unsafe { rte_pktmbuf_headroom(self.as_ptr()) as u32 }
+        unsafe { rte_pktmbuf_headroom(self.as_ptr()) as usize }
     }
 
     /// Get the tailroom of a packet mbuf.
     #[inline]
-    pub fn tailroom(&self) -> u32 {
+    pub fn tailroom(&self) -> usize {
         // SAFETY: ffi
-        unsafe { rte_pktmbuf_tailroom(self.as_ptr()) as u32 }
+        unsafe { rte_pktmbuf_tailroom(self.as_ptr()) as usize }
     }
 
     /// Create a "clone" of the given packet mbuf.
@@ -138,9 +137,9 @@ impl Mbuf {
     ///
     /// Copies all the data from a given packet mbuf to a newly allocated set of mbufs.
     /// The private data are is not copied.
-    pub fn pktmbuf_copy(&self, mp: &Mempool, offset: u32, length: u32) -> Result<Self> {
+    pub fn pktmbuf_copy(&self, mp: &Mempool, offset: usize, length: usize) -> Result<Self> {
         // SAFETY: ffi
-        let ptr = unsafe { rte_pktmbuf_copy(self.as_ptr(), mp.as_ptr(), offset, length) };
+        let ptr = unsafe { rte_pktmbuf_copy(self.as_ptr(), mp.as_ptr(), offset as _, length as _) };
         Self::new_with_ptr(ptr)
     }
 
@@ -182,40 +181,6 @@ impl Mbuf {
             let data = rte_mbuf_buf_addr(m, (*m).pool).add((*m).data_off as _);
             slice::from_raw_parts_mut(data as *mut u8, (*m).data_len as _)
         }
-    }
-
-    /// Init an Ethernet packet.
-    #[inline]
-    pub fn eth_init(&mut self) -> Result<&mut rte_ether_hdr> {
-        let data = self.append(mem::size_of::<rte_ether_hdr>())?;
-        let hdr = unsafe { &mut *(data.as_mut_ptr() as *mut rte_ether_hdr) };
-        Ok(hdr)
-    }
-
-    /// Set Ethernet src addr.
-    pub fn set_eth_src(&mut self, src: &EthAddr) -> Result<()> {
-        if self.data_len() < mem::size_of::<rte_ether_hdr>() as u32 {
-            return Err(Error::InvalidArg);
-        }
-        let data = self.data_slice_mut();
-        let ether_hdr = data.as_mut_ptr() as *mut rte_ether_hdr;
-        unsafe {
-            rte_ether_addr_copy(&**src, &mut (*ether_hdr).src_addr);
-        }
-        Ok(())
-    }
-
-    /// Set Ethernet dst addr.
-    pub fn set_eth_dst(&mut self, dst: &EthAddr) -> Result<()> {
-        if self.data_len() < mem::size_of::<rte_ether_hdr>() as u32 {
-            return Err(Error::InvalidArg);
-        }
-        let data = self.data_slice_mut();
-        let ether_hdr = data.as_mut_ptr() as *mut rte_ether_hdr;
-        unsafe {
-            rte_ether_addr_copy(&**dst, &mut (*ether_hdr).dst_addr);
-        }
-        Ok(())
     }
 
     /// Prepend len bytes to an mbuf data area.
@@ -288,6 +253,17 @@ impl Mbuf {
         Ok(())
     }
 
+    /// Get the next Mbuf chained.
+    pub fn next(&self) -> Option<&Mbuf> {
+        // SAFETY: self is valid since it's tested when initialized.
+        let ptr = unsafe { (*self.as_ptr()).next };
+        let m = Mbuf::new_with_ptr(ptr).ok()?;
+        // SAFETY: self's next should have the same lifetime as self.
+        let m = unsafe { mem::transmute(&m) };
+        mem::forget(m);
+        Some(m)
+    }
+
     /// Linearize data in mbuf.
     ///
     /// This function moves the mbuf data in the first segment if there is enough tailroom.
@@ -331,7 +307,7 @@ mod test {
         let _eal = eal::Builder::new().iova_mode(IovaMode::VA).build().unwrap();
 
         // Create a packet mempool.
-        let mp = Mbuf::create_mp("test", 10, 0, lcore::socket_id() as _).unwrap();
+        let mp = Mbuf::create_mp("test", 10, 0, lcore::socket_id()).unwrap();
         let mut mbuf = Mbuf::new(&mp).unwrap();
         assert!(mbuf.is_contiguous());
         assert_eq!(mbuf.data_len(), 0);

@@ -1,7 +1,25 @@
 //! Allocator
 
 use dpdk_sys::*;
-use std::{mem, ptr};
+use std::{mem, ptr, slice};
+
+/// Get a DPDK-allocated slice.
+pub fn slice(size: usize) -> &'static [u8] {
+    #[allow(unsafe_code)]
+    unsafe {
+        let ptr = rte_malloc(ptr::null(), size, 0) as *const u8;
+        slice::from_raw_parts(ptr, size)
+    }
+}
+
+/// Get a DPDK-allocated slice.
+pub fn slice_mut(size: usize) -> &'static mut [u8] {
+    #[allow(unsafe_code)]
+    unsafe {
+        let ptr = rte_malloc(ptr::null(), size, 0) as *mut u8;
+        slice::from_raw_parts_mut(ptr, size)
+    }
+}
 
 /// This function allocates memory from the huge-page area of memory. The memory is not cleared.
 pub fn malloc<T: Default>() -> Box<T> {
