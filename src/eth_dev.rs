@@ -1,9 +1,9 @@
 //! EthDev wrapping
-use crate::{buffer::TxBuffer, mbuf::Mbuf, mempool::Mempool, protocol::Packet, Error, Result};
+use crate::{eal::Eal, mbuf::Mbuf, mempool::Mempool, protocol::Packet, Error, Result};
 use dpdk_sys::*;
 use std::{
     fmt::Debug,
-    mem::MaybeUninit,
+    mem::{self, MaybeUninit},
     ptr,
     sync::{Arc, Mutex},
 };
@@ -22,9 +22,11 @@ pub struct EthDev {
     dev_info: rte_eth_dev_info,
     eth_conf: rte_eth_conf,
     inner: Arc<Mutex<EthDevInner>>,
+    _ctx: Arc<Eal>,
 }
 
-// This struct is to access inner immutability of EthDev. If the state of dev is changed, lock is acquired.
+// This struct is to access interior immutability of EthDev. If the state of
+// dev is changed, lock is acquired.
 struct EthDevInner {
     recver: Option<Vec<mpsc::Sender<Mbuf>>>,
     sender: Option<Vec<mpsc::Receiver<Mbuf>>>,
@@ -51,7 +53,7 @@ impl EthDev {
     /// During this process, it does some initialization to the device:
     ///  1. Confugure the number of tx / rx queues.
     ///  2. Adjust the number of tx / rx desc.
-    pub fn new(port_id: u16, n_rxq: u16, n_txq: u16) -> Result<Arc<Self>> {
+    pub fn new(ctx: &Arc<Eal>, port_id: u16, n_rxq: u16, n_txq: u16) -> Result<Arc<Self>> {
         let mut dev_info = MaybeUninit::<rte_eth_dev_info>::uninit();
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_info_get(port_id, dev_info.as_mut_ptr()) };
@@ -112,6 +114,7 @@ impl EthDev {
             dev_info,
             eth_conf,
             inner,
+            _ctx: ctx.clone(),
         }))
     }
 
@@ -217,8 +220,10 @@ impl EthDev {
         task::spawn(async move {
             loop {
                 for (queue_id, sender) in sender.iter_mut().enumerate() {
-                    let mbuf = sender.recv().await.unwrap();
-                    let mut ptrs = vec![mbuf.as_ptr()];
+                    // TODO we should do burst tx
+                    let m = sender.recv().await.unwrap();
+                    let mut ptrs = vec![m.as_ptr()];
+                    mem::forget(m);
                     // SAFETY: ffi
                     let _n = unsafe {
                         rte_eth_tx_burst(port_id, queue_id as _, ptrs.as_mut_ptr(), ptrs.len() as _)
@@ -239,7 +244,7 @@ impl EthDev {
     }
 
     /// Enable receipt in promiscuous mode for an Ethernet device.
-    pub fn enable_promiscuous(&self) -> Result<()> {
+    pub fn enable_promiscuous(self: &Arc<Self>) -> Result<()> {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_promiscuous_enable(self.port_id) };
         Error::from_ret(errno)?;
@@ -247,7 +252,7 @@ impl EthDev {
     }
 
     /// Disable receipt in promiscuous mode for an Ethernet device.
-    pub fn disable_promiscuous(&self) -> Result<()> {
+    pub fn disable_promiscuous(self: &Arc<Self>) -> Result<()> {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_promiscuous_disable(self.port_id) };
         Error::from_ret(errno)?;
@@ -255,18 +260,24 @@ impl EthDev {
     }
 
     /// Return the value of promiscuous mode for an Ethernet device.
-    pub fn is_promiscuous(&self) -> bool {
+    pub fn is_promiscuous(self: &Arc<Self>) -> bool {
         // SAFETY: ffi
         unsafe { rte_eth_promiscuous_get(self.port_id) == 1 }
     }
+
+    fn get_ctx(self: &Arc<Self>) -> Arc<Eal> {
+        self._ctx.clone()
+    }
 }
 
-#[allow(unsafe_code)]
 impl Drop for EthDev {
     fn drop(&mut self) {
         // SAFETY: ffi
+        #[allow(unsafe_code)]
         let errno = unsafe { rte_eth_dev_close(self.port_id) };
-        Error::parse_err(errno);
+        if errno < 0 {
+            Error::parse_err(errno);
+        }
     }
 }
 
@@ -293,28 +304,28 @@ impl Debug for EthDev {
 #[allow(missing_copy_implementations)]
 #[derive(Debug)]
 pub struct EthRxQueue {
-    rx: mpsc::Receiver<Mbuf>,
+    rx: Arc<tokio::sync::Mutex<mpsc::Receiver<Mbuf>>>, // XXX no lock !!!
     #[allow(dead_code)]
     mp: Mempool,
+    _dev: Arc<EthDev>,
 }
 
 /// An Ethernet device tx queue.
 #[allow(missing_copy_implementations)]
 #[derive(Debug)]
 pub struct EthTxQueue {
-    port_id: u16,
-    queue_id: u16,
-    buffer: TxBuffer,
     mp: Mempool,
     tx: mpsc::Sender<Mbuf>,
+    _dev: Arc<EthDev>,
 }
 
 #[allow(unsafe_code)]
 impl EthRxQueue {
     /// init
-    pub fn init(dev: &Arc<EthDev>, queue_id: u16) -> Result<Self> {
+    pub fn init(dev: &Arc<EthDev>, queue_id: u16) -> Result<Arc<Self>> {
         let nb_ports = EthDev::available_ports();
         let mp = Mbuf::create_mp(
+            &dev.get_ctx(),
             format!("rx_{}_{}", dev.port_id, queue_id).as_str(),
             (nb_ports * (dev.n_rxd as u32 + dev.n_txd as u32 + MAX_PKT_BURST as u32)).max(8192),
             0,
@@ -335,30 +346,36 @@ impl EthRxQueue {
         };
         Error::from_ret(errno)?;
         let rx = dev.register_recv_queue(queue_id)?;
-        Ok(Self { rx, mp })
+        let rx = Arc::new(tokio::sync::Mutex::new(rx));
+        Ok(Arc::new(Self {
+            rx,
+            mp,
+            _dev: dev.clone(),
+        }))
     }
 
     /// Receive a Packet.
-    pub async fn recv<P: Packet>(&mut self) -> Result<P> {
-        let m = self.recv0().await?;
+    pub async fn recv<P: Packet>(self: &Arc<Self>) -> Result<P> {
+        let m = self.recv_m().await?;
         Ok(P::from_mbuf(m))
     }
 
     /// Receive one Mbuf.
     #[inline(always)]
-    pub async fn recv0(&mut self) -> Result<Mbuf> {
-        self.rx.recv().await.ok_or(Error::IoErr)
+    pub async fn recv_m(self: &Arc<Self>) -> Result<Mbuf> {
+        let mut rx = self.rx.lock().await;
+        rx.recv().await.ok_or(Error::IoErr)
     }
 }
 
 #[allow(unsafe_code)]
 impl EthTxQueue {
     /// init
-    pub fn init(dev: &Arc<EthDev>, queue_id: u16) -> Result<Self> {
-        let nb_ports = EthDev::available_ports();
+    pub fn init(dev: &Arc<EthDev>, queue_id: u16) -> Result<Arc<Self>> {
         let mp = Mbuf::create_mp(
+            &dev.get_ctx(),
             format!("tx_{}_{}", dev.port_id, queue_id).as_str(),
-            (nb_ports * (dev.n_rxd as u32 + dev.n_txd as u32 + MAX_PKT_BURST as u32)).max(8192),
+            1024,
             0,
             dev.socket_id(),
         )?;
@@ -371,60 +388,23 @@ impl EthTxQueue {
         Error::from_ret(errno)?;
         // XXX: what to do with buffer?
         // We should implement buffer here in Rust
-        let buffer = TxBuffer::new_socket(dev.socket_id() as _, 512)?;
         let tx = dev.register_send_queue(queue_id)?;
-        Ok(Self {
-            port_id: dev.port_id,
-            queue_id,
-            buffer,
+        Ok(Arc::new(Self {
             mp,
             tx,
-        })
+            _dev: dev.clone(),
+        }))
     }
 
     /// Send one packet.
     pub async fn send(&self, pkt: impl Packet) -> Result<()> {
         let mbuf = pkt.into_mbuf(&self.mp)?;
-        self.send0(mbuf).await
+        self.send_m(mbuf).await
     }
 
     /// Send one Mbuf.
-    pub async fn send0(&self, msg: Mbuf) -> Result<()> {
+    pub async fn send_m(&self, msg: Mbuf) -> Result<()> {
         self.tx.send(msg).await.unwrap();
         Ok(())
-    }
-
-    /// Buffer a single packet for future transmission on a port and queue.
-    ///
-    /// This function takes a single mbuf/packet and buffers it for later transmission on the
-    /// particular port and queue specified. Once the buffer is full of packets, an attempt will
-    /// be made to transmit all the buffered packets. In case of error, where not all packets
-    /// can be transmitted, a callback is called with the unsent packets as a parameter. If no
-    /// callback is explicitly set up, the unsent packets are just freed back to the owning
-    /// mempool. The function returns the number of packets actually sent i.e. 0 if no buffer
-    /// flush occurred, otherwise the number of packets successfully flushed.
-    pub fn buffer(&self, pkt: &Mbuf) -> u16 {
-        // TODO async
-        // SAFETY: ffi
-        unsafe {
-            rte_eth_tx_buffer(
-                self.port_id,
-                self.queue_id,
-                self.buffer.as_ptr(),
-                pkt.as_ptr(),
-            )
-        }
-    }
-
-    /// Send any packets queued up for transmission on a port and HW queue.
-    ///
-    /// This causes an explicit flush of packets previously buffered via the rte_eth_tx_buffer()
-    /// function. It returns the number of packets successfully sent to the NIC, and calls the
-    /// error callback for any unsent packets. Unless explicitly set up otherwise, the default
-    /// callback simply frees the unsent packets back to the owning mempool.
-    pub fn flush_buffer(&self) -> u16 {
-        // TODO async
-        // SAFETY: ffi
-        unsafe { rte_eth_tx_buffer_flush(self.port_id, self.queue_id, self.buffer.as_ptr()) }
     }
 }

@@ -1,7 +1,9 @@
 //! Protocol trait
 
+use std::sync::Arc;
+
 // use crate::{Result, Error};
-use crate::{mbuf::Mbuf, mempool::Mempool, Result};
+use crate::{eal::Eal, mbuf::Mbuf, mempool::Mempool, Result};
 
 /// Packet is a general trait for l2/l3/l4 protocol packets.
 /// It can be converted from and into Mbuf.
@@ -19,5 +21,5 @@ pub trait Protocol: Sized {
     type Pkt: Packet;
 
     /// Binding protocol to a specific device.
-    fn bind(port_id: u16) -> Result<Self>;
+    fn bind(ctx: &Arc<Eal>, port_id: u16) -> Result<Self>;
 }

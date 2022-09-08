@@ -1,5 +1,6 @@
 //! mempool wrapper
 
+use crate::eal::Eal;
 use crate::{Error, Result};
 use dpdk_sys::*;
 use lazy_static::lazy_static;
@@ -42,11 +43,13 @@ pub const MEMPOOL_NO_IOVA_CONTIG: u32 = RTE_MEMPOOL_F_NO_IOVA_CONTIG;
 #[derive(Debug)]
 pub struct Mempool {
     inner: Arc<MempoolInner>,
+    _ctx: Arc<Eal>,
 }
 
 impl Mempool {
     /// Create a new Mempool named `name` in memory.
     pub fn create(
+        ctx: &Arc<Eal>,
         name: &str,
         n: u32,
         elt_size: u32,
@@ -65,20 +68,20 @@ impl Mempool {
             socket_id,
             flags,
         )?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            _ctx: ctx.clone(),
+        })
     }
 
     /// Search a mempool from its name.
-    pub fn lookup(name: &str) -> Result<Self> {
+    pub fn lookup(ctx: &Arc<Eal>, name: &str) -> Result<Self> {
         let name = CString::new(name).unwrap();
         let inner = MempoolInner::lookup(name)?;
-        Ok(Self { inner })
-    }
-
-    /// Get mempool from object.
-    pub fn from_object(obj: &impl MempoolObj) -> Result<Self> {
-        let inner = MempoolInner::from_object(obj)?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            _ctx: ctx.clone(),
+        })
     }
 
     /// Get one object from the mempool.
@@ -131,8 +134,11 @@ impl Mempool {
         self.inner.as_ptr()
     }
 
-    pub(crate) fn new(inner: Arc<MempoolInner>) -> Self {
-        Self { inner }
+    pub(crate) fn new(ctx: &Arc<Eal>, inner: Arc<MempoolInner>) -> Self {
+        Self {
+            inner,
+            _ctx: ctx.clone(),
+        }
     }
 }
 
@@ -212,21 +218,6 @@ impl MempoolInner {
     fn lookup(name: CString) -> Result<Arc<Self>> {
         // SAFETY: ffi
         let ptr = unsafe { rte_mempool_lookup(name.as_ptr()) };
-        if ptr.is_null() {
-            return Err(Error::from_errno());
-        }
-        MEMPOOLS
-            .lock()
-            .unwrap()
-            .get(&(ptr as usize))
-            .map(|weak| weak.upgrade().unwrap())
-            .map_or(Err(Error::Unknown), |mp| Ok(mp))
-    }
-
-    #[inline(always)]
-    fn from_object(obj: &impl MempoolObj) -> Result<Arc<Self>> {
-        // SAFETY: ffi
-        let ptr = unsafe { rte_mempool_from_obj(obj.as_c_void()) };
         if ptr.is_null() {
             return Err(Error::from_errno());
         }
@@ -336,9 +327,10 @@ mod test {
 
     #[test]
     fn test() {
-        let _eal = eal::Builder::new().iova_mode(IovaMode::VA).build().unwrap();
+        let eal = eal::Builder::new().iova_mode(IovaMode::VA).build().unwrap();
 
         let mp = Mempool::create(
+            &eal,
             "mempool",
             64,
             16,
@@ -352,7 +344,7 @@ mod test {
         assert_eq!(mp.in_use(), 0);
         assert_eq!(mp.available(), 64);
 
-        let mp1 = Mempool::lookup("mempool").unwrap();
+        let mp1 = Mempool::lookup(&eal, "mempool").unwrap();
         assert!(mp1.is_full());
         assert_eq!(mp1.in_use(), 0);
         assert_eq!(mp1.available(), 64);

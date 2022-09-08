@@ -2,8 +2,10 @@
 
 use dpdk_sys::*;
 use std::mem;
+use std::sync::Arc;
 use std::{mem::MaybeUninit, ptr::NonNull, slice};
 
+use crate::eal::Eal;
 use crate::mempool::{Mempool, MempoolInner};
 use crate::{Error, Result};
 
@@ -66,7 +68,13 @@ impl Mbuf {
     /// Create a mbuf pool.
     ///
     /// This function creates and initializes a packet mbuf pool.
-    pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: u32) -> Result<Mempool> {
+    pub fn create_mp(
+        ctx: &Arc<Eal>,
+        name: &str,
+        n: u32,
+        cache_size: u32,
+        socket_id: u32,
+    ) -> Result<Mempool> {
         // SAFETY: ffi
         let ptr = unsafe {
             rte_pktmbuf_pool_create(
@@ -79,7 +87,7 @@ impl Mbuf {
             )
         };
         let inner = MempoolInner::new(ptr)?;
-        Ok(Mempool::new(inner))
+        Ok(Mempool::new(ctx, inner))
     }
 
     /// Return the mbuf owning the data buffer address of an indirect mbuf.
@@ -288,11 +296,13 @@ unsafe impl Send for Mbuf {}
 #[allow(unsafe_code)]
 unsafe impl Sync for Mbuf {}
 
-#[allow(unsafe_code)]
 impl Drop for Mbuf {
     fn drop(&mut self) {
         // SAFETY: ffi; this pointer is valid
-        unsafe { rte_pktmbuf_free(self.as_ptr()) };
+        #[allow(unsafe_code)]
+        unsafe {
+            rte_pktmbuf_free(self.as_ptr())
+        };
     }
 }
 
@@ -304,10 +314,10 @@ mod test {
 
     #[test]
     fn test() {
-        let _eal = eal::Builder::new().iova_mode(IovaMode::VA).build().unwrap();
+        let eal = eal::Builder::new().iova_mode(IovaMode::VA).build().unwrap();
 
         // Create a packet mempool.
-        let mp = Mbuf::create_mp("test", 10, 0, lcore::socket_id()).unwrap();
+        let mp = Mbuf::create_mp(&eal, "test", 10, 0, lcore::socket_id()).unwrap();
         let mut mbuf = Mbuf::new(&mp).unwrap();
         assert!(mbuf.is_contiguous());
         assert_eq!(mbuf.data_len(), 0);

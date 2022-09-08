@@ -127,7 +127,7 @@ impl Into<Error> for i32 {
             1001 => Error::Secondary,
             1002 => Error::NoConfig,
             e if e > 0 => Error::Unknown,
-            _ => unreachable!(),
+            _ => unreachable!("errno = {}", self), // negative number
         }
     }
 }

@@ -3,6 +3,7 @@
 use crate::{Error, Result};
 use dpdk_sys::*;
 use std::ffi::CString;
+use std::sync::Arc;
 use std::{os::raw::c_char, path::PathBuf};
 
 /// EAL
@@ -199,7 +200,7 @@ impl Builder {
     /// It calls `rte_eal_init` to initialize the Environment Abstraction Layer (EAL). This function
     /// is to be executed on the MAIN lcore only, as soon as possible in the application's main()
     /// function. It puts the WORKER lcores in the WAIT state.
-    pub fn build(self) -> Result<Eal> {
+    pub fn build(self) -> Result<Arc<Eal>> {
         let mut pargs = self
             .args
             .iter()
@@ -211,6 +212,6 @@ impl Builder {
         if ret < 0 {
             return Err(Error::from_errno());
         }
-        Ok(Eal {})
+        Ok(Arc::new(Eal {}))
     }
 }

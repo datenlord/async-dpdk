@@ -15,9 +15,9 @@ use tokio::task;
 
 #[tokio::main]
 async fn main() {
-    let _eal = eal::Builder::new().build().unwrap();
-    let mut dev = EthDev::new(0, 1, 1).unwrap();
-    let mut rx = EthRxQueue::init(&mut dev, 0).unwrap();
+    let eal = eal::Builder::new().build().unwrap();
+    let mut dev = EthDev::new(&eal, 0, 1, 1).unwrap();
+    let rx = EthRxQueue::init(&mut dev, 0).unwrap();
     let _tx = EthTxQueue::init(&mut dev, 0).unwrap();
     dev.start().unwrap();
     dev.enable_promiscuous().unwrap();
@@ -27,7 +27,7 @@ async fn main() {
 
     task::spawn(async move {
         loop {
-            let _pkt = rx.recv0().await.unwrap();
+            let _pkt = rx.recv_m().await.unwrap();
             count.fetch_add(1, Ordering::Relaxed);
         }
     });
