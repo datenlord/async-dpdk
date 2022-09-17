@@ -94,7 +94,7 @@ mod tests {
             y: i64,
         }
 
-        let _eal = eal::Builder::new().iova_mode(IovaMode::VA).build().unwrap();
+        eal::Builder::new().iova_mode(IovaMode::VA).enter().unwrap();
 
         let t = alloc::malloc::<Test>();
         assert_eq!(t.x, 0);

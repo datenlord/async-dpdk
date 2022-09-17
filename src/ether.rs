@@ -1,11 +1,10 @@
 //! General expression of packets.
 
 use crate::{
-    eal::Eal,
     eth_dev::{EthDev, EthRxQueue, EthTxQueue},
     mbuf::Mbuf,
     mempool::Mempool,
-    protocol::{Packet, Protocol},
+    protocol::{Packet, Protocol, Serves},
     Result,
 };
 use bytes::{BufMut, BytesMut};
@@ -90,6 +89,17 @@ impl Packet for EthPacket {
     }
 }
 
+impl Serves<String> for EthPacket {
+    fn concat(&mut self, p: &String) {
+        self.frags.push(p.as_str().into());
+    }
+
+    fn inner(&self) -> &String {
+        // self.frags[1].as_ref()
+        todo!()
+    }
+}
+
 /// Ethernet protocol implementation
 #[derive(Debug)]
 pub struct Ethernet {
@@ -102,8 +112,8 @@ pub struct Ethernet {
 impl Protocol for Ethernet {
     type Pkt = EthPacket;
 
-    fn bind(ctx: &Arc<Eal>, port_id: u16) -> Result<Self> {
-        let mut dev = EthDev::new(ctx, port_id, 1, 1)?;
+    fn bind(port_id: u16) -> Result<Self> {
+        let mut dev = EthDev::new(port_id, 1, 1)?;
         let rx = EthRxQueue::init(&mut dev, 0)?;
         let tx = EthTxQueue::init(&mut dev, 0)?;
         Ok(Self { dev, rx, tx })

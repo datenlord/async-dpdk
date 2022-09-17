@@ -2,63 +2,74 @@
 
 use crate::{Error, Result};
 use dpdk_sys::*;
+use lazy_static::lazy_static;
 use std::ffi::CString;
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::{os::raw::c_char, path::PathBuf};
+
+lazy_static! {
+    static ref CONTEXT: RwLock<Option<Arc<Eal>>> = RwLock::new(None);
+}
 
 /// EAL
 #[derive(Debug)]
 pub struct Eal {}
 
 #[allow(unsafe_code)]
-impl Eal {
-    /// Check if a primary process is currently alive.
-    ///
-    /// This function returns true when a primary process is currently active.
-    pub fn primary_proc_alive() -> bool {
-        todo!()
-    }
+unsafe impl Sync for Eal {}
 
-    /// Disable multiprocess.
-    ///
-    /// This function can be called to indicate that multiprocess won't be used for the rest of
-    /// the application life.
-    pub fn disable_mp(&self) -> bool {
-        // SAFETY: ffi
-        unsafe { rte_mp_disable() }
-    }
+/// Check if a primary process is currently alive.
+///
+/// This function returns true when a primary process is currently active.
+pub fn primary_proc_alive() -> bool {
+    todo!()
+}
 
-    /// Whether EAL is using hugepages.
-    pub fn has_hugepages(&self) -> bool {
-        // SAFETY: ffi
-        unsafe { rte_eal_has_hugepages() != 0 }
-    }
+/// Disable multiprocess.
+///
+/// This function can be called to indicate that multiprocess won't be used for the rest of
+/// the application life.
+#[allow(unsafe_code)]
+pub fn disable_mp() -> bool {
+    // SAFETY: ffi
+    unsafe { rte_mp_disable() }
+}
 
-    /// Whether EAL is using PCI bus. Disabled by –no-pci option.
-    pub fn has_pci(&self) -> bool {
-        // SAFETY: ffi
-        unsafe { rte_eal_has_pci() != 0 }
-    }
+/// Whether EAL is using hugepages.
+#[allow(unsafe_code)]
+pub fn has_hugepages() -> bool {
+    // SAFETY: ffi
+    unsafe { rte_eal_has_hugepages() != 0 }
+}
 
-    /// Whether the EAL was asked to create UIO device.
-    pub fn uio_created(&self) -> bool {
-        // SAFETY: ffi
-        unsafe { rte_eal_create_uio_dev() != 0 }
-    }
+/// Whether EAL is using PCI bus. Disabled by –no-pci option.
+#[allow(unsafe_code)]
+pub fn has_pci() -> bool {
+    // SAFETY: ffi
+    unsafe { rte_eal_has_pci() != 0 }
+}
 
-    /// The user-configured vfio interrupt mode.
-    pub fn vfio_intr_mode(&self) {
-        todo!()
-    }
+/// Whether the EAL was asked to create UIO device.
+#[allow(unsafe_code)]
+pub fn uio_created() -> bool {
+    // SAFETY: ffi
+    unsafe { rte_eal_create_uio_dev() != 0 }
+}
 
-    /// Get the runtime directory of DPDK
-    pub fn runtime_dir(&self) -> PathBuf {
-        // SAFETY: ffi
-        let ptr = unsafe { rte_eal_get_runtime_dir() };
-        // SAFETY: read C string
-        let cs = unsafe { CString::from_raw(ptr as _) };
-        PathBuf::from(cs.into_string().unwrap())
-    }
+/// The user-configured vfio interrupt mode.
+#[allow(unsafe_code)]
+pub fn vfio_intr_mode() {
+    todo!()
+}
+
+/// Get the runtime directory of DPDK
+#[allow(unsafe_code)]
+pub fn runtime_dir() -> PathBuf {
+    // SAFETY: ffi
+    let ptr = unsafe { rte_eal_get_runtime_dir() };
+    // SAFETY: read C string
+    let cs = unsafe { CString::from_raw(ptr as _) };
+    PathBuf::from(cs.into_string().unwrap())
 }
 
 impl Drop for Eal {
@@ -195,12 +206,10 @@ impl Builder {
         self
     }
 
-    /// Get an EAL instance.
-    ///
     /// It calls `rte_eal_init` to initialize the Environment Abstraction Layer (EAL). This function
     /// is to be executed on the MAIN lcore only, as soon as possible in the application's main()
     /// function. It puts the WORKER lcores in the WAIT state.
-    pub fn build(self) -> Result<Arc<Eal>> {
+    pub fn enter(self) -> Result<()> {
         let mut pargs = self
             .args
             .iter()
@@ -212,6 +221,8 @@ impl Builder {
         if ret < 0 {
             return Err(Error::from_errno());
         }
-        Ok(Arc::new(Eal {}))
+        let context = Arc::new(Eal {});
+        *CONTEXT.write().unwrap() = Some(context.clone());
+        Ok(())
     }
 }

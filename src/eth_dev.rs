@@ -1,5 +1,5 @@
 //! EthDev wrapping
-use crate::{eal::Eal, mbuf::Mbuf, mempool::Mempool, protocol::Packet, Error, Result};
+use crate::{mbuf::Mbuf, mempool::Mempool, protocol::Packet, Error, Result};
 use dpdk_sys::*;
 use std::{
     fmt::Debug,
@@ -22,7 +22,6 @@ pub struct EthDev {
     dev_info: rte_eth_dev_info,
     eth_conf: rte_eth_conf,
     inner: Arc<Mutex<EthDevInner>>,
-    _ctx: Arc<Eal>,
 }
 
 // This struct is to access interior immutability of EthDev. If the state of
@@ -53,7 +52,7 @@ impl EthDev {
     /// During this process, it does some initialization to the device:
     ///  1. Confugure the number of tx / rx queues.
     ///  2. Adjust the number of tx / rx desc.
-    pub fn new(ctx: &Arc<Eal>, port_id: u16, n_rxq: u16, n_txq: u16) -> Result<Arc<Self>> {
+    pub fn new(port_id: u16, n_rxq: u16, n_txq: u16) -> Result<Arc<Self>> {
         let mut dev_info = MaybeUninit::<rte_eth_dev_info>::uninit();
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_info_get(port_id, dev_info.as_mut_ptr()) };
@@ -114,7 +113,6 @@ impl EthDev {
             dev_info,
             eth_conf,
             inner,
-            _ctx: ctx.clone(),
         }))
     }
 
@@ -264,10 +262,6 @@ impl EthDev {
         // SAFETY: ffi
         unsafe { rte_eth_promiscuous_get(self.port_id) == 1 }
     }
-
-    fn get_ctx(self: &Arc<Self>) -> Arc<Eal> {
-        self._ctx.clone()
-    }
 }
 
 impl Drop for EthDev {
@@ -325,7 +319,6 @@ impl EthRxQueue {
     pub fn init(dev: &Arc<EthDev>, queue_id: u16) -> Result<Arc<Self>> {
         let nb_ports = EthDev::available_ports();
         let mp = Mbuf::create_mp(
-            &dev.get_ctx(),
             format!("rx_{}_{}", dev.port_id, queue_id).as_str(),
             (nb_ports * (dev.n_rxd as u32 + dev.n_txd as u32 + MAX_PKT_BURST as u32)).max(8192),
             0,
@@ -373,7 +366,6 @@ impl EthTxQueue {
     /// init
     pub fn init(dev: &Arc<EthDev>, queue_id: u16) -> Result<Arc<Self>> {
         let mp = Mbuf::create_mp(
-            &dev.get_ctx(),
             format!("tx_{}_{}", dev.port_id, queue_id).as_str(),
             1024,
             0,
