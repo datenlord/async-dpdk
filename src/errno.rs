@@ -57,6 +57,8 @@ pub enum Error {
     NotSupported = -libc::ENOTSUP,
     #[error("Operation already in progress")]
     Already = -libc::EALREADY,
+    #[error("No buffer space available")]
+    NoBuf = -libc::ENOBUFS,
     #[error("Operation not allowed in secondary processes")]
     Secondary = -1001, // RTE defined
     #[error("Missing rte_config")]
@@ -124,6 +126,7 @@ impl Into<Error> for i32 {
             libc::EOVERFLOW => Error::Overflow,
             libc::ENOTSUP => Error::NotSupported,
             libc::EALREADY => Error::Already,
+            libc::ENOBUFS => Error::NoBuf,
             1001 => Error::Secondary,
             1002 => Error::NoConfig,
             e if e > 0 => Error::Unknown,

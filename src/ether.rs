@@ -4,7 +4,7 @@ use crate::{
     eth_dev::{EthDev, EthRxQueue, EthTxQueue},
     mbuf::Mbuf,
     mempool::Mempool,
-    protocol::{Packet, Protocol, Serves},
+    protocol::L2Packet,
     Result,
 };
 use bytes::{BufMut, BytesMut};
@@ -22,7 +22,6 @@ macro_rules! is_bad_iova {
 /// Ethernet packet.
 #[derive(Debug)]
 pub struct EthPacket {
-    #[allow(dead_code)]
     frags: Vec<BytesMut>,
 }
 
@@ -30,22 +29,22 @@ pub struct EthPacket {
 impl EthPacket {
     /// Create a Ethernet packet.
     pub fn new(src: rte_ether_addr, dst: rte_ether_addr, protocol: u16) -> Self {
-        // let data = alloc::slice_mut(mem::size_of::<rte_ether_hdr>()); // XXX: mem leak
         let mut data = BytesMut::with_capacity(mem::size_of::<rte_ether_hdr>());
-        let hdr = data.as_mut_ptr() as *mut rte_ether_hdr;
+        let hdr = unsafe { &mut *(data.as_mut_ptr() as *mut rte_ether_hdr) };
+        // SAFETY: ffi
         unsafe {
-            rte_ether_addr_copy(&src, &mut (*hdr).src_addr);
-            rte_ether_addr_copy(&dst, &mut (*hdr).dst_addr);
-            (*hdr).ether_type = protocol.to_be();
-        };
+            rte_ether_addr_copy(&src, &mut hdr.src_addr);
+            rte_ether_addr_copy(&dst, &mut hdr.dst_addr);
+        }
+        hdr.ether_type = protocol.to_be();
         let frags = vec![data];
         Self { frags }
     }
 }
 
 #[allow(unsafe_code)]
-impl Packet for EthPacket {
-    fn from_mbuf(m: Mbuf) -> Self {
+impl L2Packet for EthPacket {
+    fn from_mbuf(m: Mbuf) -> Result<Self> {
         let mut frags = vec![];
         let mut cur = &m;
         loop {
@@ -57,7 +56,7 @@ impl Packet for EthPacket {
                 break;
             }
         }
-        EthPacket { frags }
+        Ok(EthPacket { frags })
     }
 
     fn into_mbuf(mut self, mp: &Mempool) -> Result<Mbuf> {
@@ -89,17 +88,6 @@ impl Packet for EthPacket {
     }
 }
 
-impl Serves<String> for EthPacket {
-    fn concat(&mut self, p: &String) {
-        self.frags.push(p.as_str().into());
-    }
-
-    fn inner(&self) -> &String {
-        // self.frags[1].as_ref()
-        todo!()
-    }
-}
-
 /// Ethernet protocol implementation
 #[derive(Debug)]
 pub struct Ethernet {
@@ -109,18 +97,15 @@ pub struct Ethernet {
     tx: Arc<EthTxQueue>,
 }
 
-impl Protocol for Ethernet {
-    type Pkt = EthPacket;
-
-    fn bind(port_id: u16) -> Result<Self> {
+impl Ethernet {
+    /// Bind Ethernet to one device.
+    pub fn bind(port_id: u16) -> Result<Self> {
         let mut dev = EthDev::new(port_id, 1, 1)?;
         let rx = EthRxQueue::init(&mut dev, 0)?;
         let tx = EthTxQueue::init(&mut dev, 0)?;
         Ok(Self { dev, rx, tx })
     }
-}
 
-impl Ethernet {
     /// Send a L2 packet.
     pub async fn send(&self, pkt: EthPacket) -> Result<()> {
         self.tx.send(pkt).await

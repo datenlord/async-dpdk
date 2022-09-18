@@ -1,5 +1,5 @@
 //! EthDev wrapping
-use crate::{mbuf::Mbuf, mempool::Mempool, protocol::Packet, Error, Result};
+use crate::{mbuf::Mbuf, mempool::Mempool, protocol::L2Packet, Error, Result};
 use dpdk_sys::*;
 use std::{
     fmt::Debug,
@@ -348,14 +348,14 @@ impl EthRxQueue {
     }
 
     /// Receive a Packet.
-    pub async fn recv<P: Packet>(self: &Arc<Self>) -> Result<P> {
+    pub async fn recv<P: L2Packet>(self: &Arc<Self>) -> Result<P> {
         let m = self.recv_m().await?;
-        Ok(P::from_mbuf(m))
+        P::from_mbuf(m)
     }
 
     /// Receive one Mbuf.
     #[inline(always)]
-    pub async fn recv_m(self: &Arc<Self>) -> Result<Mbuf> {
+    async fn recv_m(self: &Arc<Self>) -> Result<Mbuf> {
         let mut rx = self.rx.lock().await;
         rx.recv().await.ok_or(Error::IoErr)
     }
@@ -389,13 +389,14 @@ impl EthTxQueue {
     }
 
     /// Send one packet.
-    pub async fn send(&self, pkt: impl Packet) -> Result<()> {
+    pub async fn send(&self, pkt: impl L2Packet) -> Result<()> {
         let mbuf = pkt.into_mbuf(&self.mp)?;
         self.send_m(mbuf).await
     }
 
     /// Send one Mbuf.
-    pub async fn send_m(&self, msg: Mbuf) -> Result<()> {
+    #[inline(always)]
+    async fn send_m(&self, msg: Mbuf) -> Result<()> {
         self.tx.send(msg).await.unwrap();
         Ok(())
     }
