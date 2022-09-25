@@ -1,15 +1,13 @@
 //! General expression of packets.
 
 use crate::{
-    eth_dev::{EthDev, EthRxQueue, EthTxQueue},
     mbuf::Mbuf,
     mempool::Mempool,
-    protocol::L2Packet,
+    protocol::{L2Protocol, L3Protocol, L4Protocol, Packet},
     Result,
 };
 use bytes::{BufMut, BytesMut};
-use dpdk_sys::{rte_ether_addr, rte_ether_addr_copy, rte_ether_hdr};
-use std::{mem, sync::Arc};
+use dpdk_sys::{RTE_PTYPE_L2_MASK, RTE_PTYPE_L3_MASK, RTE_PTYPE_L4_MASK};
 
 #[allow(unused_macros)]
 macro_rules! is_bad_iova {
@@ -21,30 +19,51 @@ macro_rules! is_bad_iova {
 
 /// Ethernet packet.
 #[derive(Debug)]
-pub struct EthPacket {
-    frags: Vec<BytesMut>,
+pub struct GenericPacket {
+    pub(crate) l2protocol: L2Protocol,
+    pub(crate) l3protocol: L3Protocol,
+    pub(crate) l4protocol: L4Protocol,
+    pub(crate) frags: Vec<BytesMut>,
 }
 
 #[allow(unsafe_code)]
-impl EthPacket {
-    /// Create a Ethernet packet.
-    pub fn new(src: rte_ether_addr, dst: rte_ether_addr, protocol: u16) -> Self {
-        let mut data = BytesMut::with_capacity(mem::size_of::<rte_ether_hdr>());
-        let hdr = unsafe { &mut *(data.as_mut_ptr() as *mut rte_ether_hdr) };
-        // SAFETY: ffi
-        unsafe {
-            rte_ether_addr_copy(&src, &mut hdr.src_addr);
-            rte_ether_addr_copy(&dst, &mut hdr.dst_addr);
+impl GenericPacket {
+    /// Get a new GenericPacket instance.
+    pub(crate) fn new(
+        l2protocol: L2Protocol,
+        l3protocol: L3Protocol,
+        l4protocol: L4Protocol,
+    ) -> Self {
+        Self {
+            frags: vec![],
+            l2protocol,
+            l3protocol,
+            l4protocol,
         }
-        hdr.ether_type = protocol.to_be();
-        let frags = vec![data];
-        Self { frags }
+    }
+
+    /// Append fragment
+    pub(crate) fn append(&mut self, frag: BytesMut) {
+        self.frags.push(frag);
     }
 }
 
+const L2_MASK: u32 = RTE_PTYPE_L2_MASK;
+const L3_MASK: u32 = RTE_PTYPE_L3_MASK;
+const L4_MASK: u32 = RTE_PTYPE_L4_MASK;
+
 #[allow(unsafe_code)]
-impl L2Packet for EthPacket {
+impl Packet for GenericPacket {
     fn from_mbuf(m: Mbuf) -> Result<Self> {
+        let (l2protocol, l3protocol, l4protocol) = {
+            let m = unsafe { &*m.as_ptr() };
+            let pkt_type = unsafe { m.packet_type_union.packet_type };
+            (
+                (pkt_type & L2_MASK).into(),
+                (pkt_type & L3_MASK).into(),
+                (pkt_type & L4_MASK).into(),
+            )
+        };
         let mut frags = vec![];
         let mut cur = &m;
         loop {
@@ -56,7 +75,12 @@ impl L2Packet for EthPacket {
                 break;
             }
         }
-        Ok(EthPacket { frags })
+        Ok(GenericPacket {
+            l2protocol,
+            l3protocol,
+            l4protocol,
+            frags,
+        })
     }
 
     fn into_mbuf(mut self, mp: &Mempool) -> Result<Mbuf> {
@@ -84,35 +108,11 @@ impl L2Packet for EthPacket {
             let data = tail.append(len)?;
             data.copy_from_slice(frag); // TODO: zero-copy
         }
-        Ok(head.unwrap_or(tail))
-    }
-}
-
-/// Ethernet protocol implementation
-#[derive(Debug)]
-pub struct Ethernet {
-    #[allow(dead_code)]
-    dev: Arc<EthDev>,
-    rx: Arc<EthRxQueue>,
-    tx: Arc<EthTxQueue>,
-}
-
-impl Ethernet {
-    /// Bind Ethernet to one device.
-    pub fn bind(port_id: u16) -> Result<Self> {
-        let mut dev = EthDev::new(port_id, 1, 1)?;
-        let rx = EthRxQueue::init(&mut dev, 0)?;
-        let tx = EthTxQueue::init(&mut dev, 0)?;
-        Ok(Self { dev, rx, tx })
-    }
-
-    /// Send a L2 packet.
-    pub async fn send(&self, pkt: EthPacket) -> Result<()> {
-        self.tx.send(pkt).await
-    }
-
-    /// Recv a L2 packet.
-    pub async fn recv(&mut self) -> Result<EthPacket> {
-        self.rx.recv().await
+        let mbuf = head.unwrap_or(tail);
+        let m = unsafe { &mut *(mbuf.as_ptr()) };
+        m.packet_type_union.packet_type =
+            self.l2protocol as u32 | self.l3protocol as u32 | self.l4protocol as u32;
+        // XXX fill l2_len, l3_len and l4_len
+        Ok(mbuf)
     }
 }

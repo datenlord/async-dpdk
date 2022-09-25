@@ -115,14 +115,15 @@ pub use dpdk_sys::{eth_foreach_dev, lcore_foreach, lcore_foreach_worker};
 pub mod alloc;
 pub mod eal;
 pub mod eth_dev;
-pub mod ether;
 pub mod lcore;
 pub mod mbuf;
 pub mod mempool;
+pub mod net_dev;
+pub mod packet;
 pub mod protocol;
 pub mod udp;
 
+mod agent;
 mod errno;
 pub use errno::*;
-mod net_dev;
-mod sock;
+mod socket;

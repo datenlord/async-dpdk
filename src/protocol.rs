@@ -1,8 +1,7 @@
 //! Protocol trait
 
 use dpdk_sys::{
-    RTE_PTYPE_L2_ETHER, RTE_PTYPE_L2_ETHER_ARP, RTE_PTYPE_L2_ETHER_LLDP, RTE_PTYPE_L2_ETHER_NSH,
-    RTE_PTYPE_L2_ETHER_TIMESYNC, RTE_PTYPE_L2_ETHER_VLAN, RTE_PTYPE_L3_IPV4, RTE_PTYPE_L3_IPV6,
+    RTE_PTYPE_L2_ETHER, RTE_PTYPE_L2_ETHER_ARP, RTE_PTYPE_L3_IPV4, RTE_PTYPE_L3_IPV6,
     RTE_PTYPE_L4_TCP, RTE_PTYPE_L4_UDP,
 };
 
@@ -15,16 +14,18 @@ use crate::{mbuf::Mbuf, mempool::Mempool, Result};
 pub enum L2Protocol {
     /// Ethernet packet type.
     Ether = RTE_PTYPE_L2_ETHER,
-    /// Ethernet packet for time sync.
-    TimeSync = RTE_PTYPE_L2_ETHER_TIMESYNC,
     /// ARP (Address Resolution Protocol) packet type.
     ARP = RTE_PTYPE_L2_ETHER_ARP,
-    /// LLDP (Link Layer Discovery Protocol) packet type.
-    LLDP = RTE_PTYPE_L2_ETHER_LLDP,
-    /// NSH (Network Service Header) packet type.
-    NSH = RTE_PTYPE_L2_ETHER_NSH,
-    /// VLAN packet type.
-    VLAN = RTE_PTYPE_L2_ETHER_VLAN,
+}
+
+impl Into<L2Protocol> for u32 {
+    fn into(self) -> L2Protocol {
+        match self {
+            RTE_PTYPE_L2_ETHER => L2Protocol::Ether,
+            RTE_PTYPE_L2_ETHER_ARP => L2Protocol::ARP,
+            _ => unimplemented!("unknown l2 protocol number {self}"),
+        }
+    }
 }
 
 #[repr(u32)]
@@ -37,6 +38,16 @@ pub enum L3Protocol {
     Ipv6 = RTE_PTYPE_L3_IPV6,
 }
 
+impl Into<L3Protocol> for u32 {
+    fn into(self) -> L3Protocol {
+        match self {
+            RTE_PTYPE_L3_IPV4 => L3Protocol::Ipv4,
+            RTE_PTYPE_L3_IPV6 => L3Protocol::Ipv6,
+            _ => unimplemented!("unknown l3 protocol number {self}"),
+        }
+    }
+}
+
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
 /// L4 protocol.
@@ -47,10 +58,20 @@ pub enum L4Protocol {
     TCP = RTE_PTYPE_L4_TCP,
 }
 
+impl Into<L4Protocol> for u32 {
+    fn into(self) -> L4Protocol {
+        match self {
+            RTE_PTYPE_L4_UDP => L4Protocol::UDP,
+            RTE_PTYPE_L4_TCP => L4Protocol::TCP,
+            _ => unimplemented!("unknown l4 protocol number {self}"),
+        }
+    }
+}
+
 /// Packet is a general trait for l2/l3/l4 protocol packets.
 /// It can be converted from and into Mbuf.
 /// The conversion should be zero-copy!!!
-pub trait L2Packet: Sized {
+pub trait Packet: Sized {
     /// Generate Packet from a Mbuf
     fn from_mbuf(m: Mbuf) -> Result<Self>;
     /// Convert Packet into a Mbuf.
