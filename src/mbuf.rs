@@ -29,7 +29,7 @@ pub struct Mbuf {
 #[allow(unsafe_code)]
 impl Mbuf {
     pub(crate) fn new_with_ptr(ptr: *mut rte_mbuf) -> Result<Self> {
-        NonNull::new(ptr).map_or_else(|| Err(Error::from_errno()), |mb| Ok(Self { mb }))
+        NonNull::new(ptr).map_or(Err(Error::NoMem), |mb| Ok(Self { mb }))
     }
 
     /// Allocate an uninitialized mbuf from mempool.
@@ -56,7 +56,7 @@ impl Mbuf {
         for mut mbuf in mbufs {
             let ptr = mbuf.as_mut_ptr();
             // SAFETY: mbufs initialized in `rte_pktmbuf_alloc_bulk`
-            let _mbuf = unsafe { mbuf.assume_init() }; // XXX
+            let _mbuf = unsafe { mbuf.assume_init() };
             v.push(Self::new_with_ptr(ptr)?)
         }
         Ok(v)

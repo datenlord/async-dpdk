@@ -95,11 +95,6 @@ impl Mempool {
         self.inner.put_bulk(objs, n);
     }
 
-    /// Get name pf the mempool.
-    pub fn name(&self) -> String {
-        self.inner.name().into_string().unwrap()
-    }
-
     /// Return the number of entries in the mempool. When cache is enabled, this function has to browse
     /// the length of all lcores, so it should not be used in a data path, but only for debug purposes.
     /// User-owned mempool caches are not accounted for.
@@ -163,7 +158,7 @@ impl Drop for MempoolInner {
 #[allow(unsafe_code)]
 impl MempoolInner {
     pub(crate) fn new(ptr: *mut rte_mempool) -> Result<Arc<Self>> {
-        let mp = NonNull::new(ptr).map_or_else(|| Err(Error::from_errno()), |mp| Ok(mp))?;
+        let mp = NonNull::new(ptr).map_or(Err(Error::NoMem), |mp| Ok(mp))?;
         let mp = Arc::new(Self { mp });
         assert!(MEMPOOLS
             .lock()
@@ -263,12 +258,6 @@ impl MempoolInner {
             .into_iter()
             .map(|obj| unsafe { obj.assume_init() })
             .collect())
-    }
-
-    #[inline(always)]
-    fn name(&self) -> CString {
-        // SAFETY: read C string
-        unsafe { CString::from_raw((*self.mp.as_ptr()).name.as_mut_ptr()) } // BUG
     }
 
     #[inline(always)]

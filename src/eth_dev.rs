@@ -3,7 +3,7 @@ use crate::{
     agent::{RxAgent, TxAgent},
     mbuf::Mbuf,
     mempool::Mempool,
-    protocol::Packet,
+    packet::Packet,
     Error, Result,
 };
 use dpdk_sys::*;
@@ -14,13 +14,12 @@ use tokio::sync::mpsc;
 /// An Ethernet device.
 pub struct EthDev {
     port_id: u16,
-    n_rxd: u16,
-    n_txd: u16,
     socket_id: u32,
     tx_agent: Arc<TxAgent>,
     rx_agent: Arc<RxAgent>,
-    dev_info: rte_eth_dev_info,
-    eth_conf: rte_eth_conf,
+    tx_queue: Vec<Arc<EthTxQueue>>,
+    rx_queue: Vec<Arc<EthRxQueue>>,
+    tx_chan: Vec<Option<mpsc::Sender<Mbuf>>>,
 }
 
 #[allow(unsafe_code)]
@@ -36,7 +35,7 @@ impl EthDev {
     /// During this process, it does some initialization to the device:
     ///  1. Confugure the number of tx / rx queues.
     ///  2. Adjust the number of tx / rx desc.
-    pub fn new(port_id: u16, n_rxq: u16, n_txq: u16) -> Result<Arc<Self>> {
+    pub fn new(port_id: u16, n_rxq: u16, n_txq: u16) -> Result<Self> {
         let mut dev_info = MaybeUninit::<rte_eth_dev_info>::uninit();
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_info_get(port_id, dev_info.as_mut_ptr()) };
@@ -63,24 +62,69 @@ impl EthDev {
         }
         let socket_id = socket_id as u32;
 
+        // XXX now we use one TxAgent and one RxAgent for each EthDev.
+        // Make the mapping more flexible.
         let rx_agent = RxAgent::start();
         let tx_agent = TxAgent::start();
 
-        Ok(Arc::new(Self {
+        let nb_ports = EthDev::available_ports();
+        let n_elem = (nb_ports * (n_rxd as u32 + n_txd as u32 + 32)).max(8192);
+
+        let mut tx_queue = vec![];
+        let mut rx_queue = vec![];
+
+        for queue_id in 0..n_txq {
+            tx_queue.push(EthTxQueue::init(
+                port_id, queue_id, socket_id, n_txd, &dev_info, &eth_conf,
+            )?);
+        }
+        for queue_id in 0..n_rxq {
+            rx_queue.push(EthRxQueue::init(
+                port_id, queue_id, socket_id, n_rxd, n_elem, &dev_info, &eth_conf,
+            )?);
+        }
+
+        let tx_chan = (0..n_txq).map(|_| None).collect();
+
+        Ok(Self {
             port_id,
-            n_rxd,
-            n_txd,
             socket_id,
             tx_agent,
             rx_agent,
-            dev_info,
-            eth_conf,
-        }))
+            tx_queue,
+            rx_queue,
+            tx_chan,
+        })
     }
 
     /// Get socket id.
     pub fn socket_id(&self) -> u32 {
         self.socket_id
+    }
+
+    /// Init tx queue and rx queue.
+    fn start_queue(&mut self) -> Result<()> {
+        for (queue_id, chan) in self.tx_chan.iter_mut().enumerate() {
+            *chan = Some(self.tx_agent.register(self.port_id, queue_id as _));
+        }
+        self.rx_queue
+            .iter()
+            .enumerate()
+            .for_each(|(queue_id, _)| self.rx_agent.register(self.port_id, queue_id as _));
+        Ok(())
+    }
+
+    /// Stop tx queue and rx queue.
+    fn stop_queue(&self) -> Result<()> {
+        self.tx_queue
+            .iter()
+            .enumerate()
+            .for_each(|(queue_id, _)| self.tx_agent.unregister(self.port_id, queue_id as _));
+        self.rx_queue
+            .iter()
+            .enumerate()
+            .for_each(|(queue_id, _)| self.rx_agent.unregister(self.port_id, queue_id as _));
+        Ok(())
     }
 
     /// Start an Ethernet device.
@@ -92,36 +136,47 @@ impl EthDev {
     ///
     /// On success, all basic functions exported by the Ethernet API (link status, receive/
     /// transmit, and so on) can be invoked.
-    pub fn start(self: &Arc<Self>) -> Result<()> {
+    pub fn start(&mut self) -> Result<()> {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_start(self.port_id) };
         Error::from_ret(errno)?;
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_set_ptypes(self.port_id, 0, ptr::null_mut(), 0) };
         Error::from_ret(errno)?;
+        self.start_queue()?;
         Ok(())
     }
 
     /// Stop an Ethernet device.
-    pub async fn stop(self: &Arc<Self>) -> Result<()> {
+    pub fn stop(&mut self) -> Result<()> {
+        self.stop_queue()?;
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_stop(self.port_id) };
         Error::from_ret(errno)?;
         Ok(())
     }
 
+    pub(crate) fn sender(&self, queue_id: u16) -> Option<TxSender> {
+        let chan: mpsc::Sender<Mbuf> = self.tx_chan.get(queue_id as usize)?.clone()?;
+        let tx_queue: Arc<EthTxQueue> = self.tx_queue.get(queue_id as usize)?.clone();
+        Some(TxSender {
+            chan,
+            tx_queue: tx_queue.clone(),
+        })
+    }
+
     /// Get MAC address.
-    pub fn mac_addr(port_id: u16) -> Result<rte_ether_addr> {
+    pub fn mac_addr(&self) -> Result<rte_ether_addr> {
         let mut ether_addr = MaybeUninit::<rte_ether_addr>::uninit();
         // SAFETY: ffi
-        let errno = unsafe { rte_eth_macaddr_get(port_id, ether_addr.as_mut_ptr()) };
+        let errno = unsafe { rte_eth_macaddr_get(self.port_id, ether_addr.as_mut_ptr()) };
         Error::from_ret(errno)?;
         // SAFETY: rte_ether_addr is successfully initialized due to no error code.
         Ok(unsafe { ether_addr.assume_init() })
     }
 
     /// Enable receipt in promiscuous mode for an Ethernet device.
-    pub fn enable_promiscuous(self: &Arc<Self>) -> Result<()> {
+    pub fn enable_promiscuous(&self) -> Result<()> {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_promiscuous_enable(self.port_id) };
         Error::from_ret(errno)?;
@@ -129,7 +184,7 @@ impl EthDev {
     }
 
     /// Disable receipt in promiscuous mode for an Ethernet device.
-    pub fn disable_promiscuous(self: &Arc<Self>) -> Result<()> {
+    pub fn disable_promiscuous(&self) -> Result<()> {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_promiscuous_disable(self.port_id) };
         Error::from_ret(errno)?;
@@ -137,7 +192,7 @@ impl EthDev {
     }
 
     /// Return the value of promiscuous mode for an Ethernet device.
-    pub fn is_promiscuous(self: &Arc<Self>) -> bool {
+    pub fn is_promiscuous(&self) -> bool {
         // SAFETY: ffi
         unsafe { rte_eth_promiscuous_get(self.port_id) == 1 }
     }
@@ -167,8 +222,6 @@ impl Debug for EthDev {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EthDev")
             .field("port_id", &self.port_id)
-            .field("n_rxd", &self.n_rxd)
-            .field("n_txd", &self.n_txd)
             .field("socket_id", &self.socket_id)
             .finish()
     }
@@ -177,111 +230,88 @@ impl Debug for EthDev {
 /// An Ethernet device rx queue.
 #[allow(missing_copy_implementations)]
 #[derive(Debug)]
-pub struct EthRxQueue {
+struct EthRxQueue {
+    #[allow(dead_code)]
     queue_id: u16,
     #[allow(dead_code)]
     mp: Mempool,
-    dev: Arc<EthDev>,
 }
 
 /// An Ethernet device tx queue.
 #[allow(missing_copy_implementations)]
 #[derive(Debug)]
-pub struct EthTxQueue {
+struct EthTxQueue {
+    #[allow(dead_code)]
     queue_id: u16,
     mp: Mempool,
-    tx: mpsc::Sender<Mbuf>,
-    dev: Arc<EthDev>,
+}
+
+#[derive(Debug)]
+pub(crate) struct TxSender {
+    chan: mpsc::Sender<Mbuf>,
+    tx_queue: Arc<EthTxQueue>,
+}
+
+impl TxSender {
+    pub(crate) async fn send(&self, pkt: Packet) -> Result<()> {
+        let m = pkt.into_mbuf(&self.tx_queue.mp)?;
+        let res = self.chan.send(m).await;
+        res.map_err(|_| Error::BrokenPipe)
+    }
 }
 
 #[allow(unsafe_code)]
 impl EthRxQueue {
     /// init
-    pub fn init(dev: &Arc<EthDev>, queue_id: u16) -> Result<Arc<Self>> {
-        let nb_ports = EthDev::available_ports();
+    fn init(
+        port_id: u16,
+        queue_id: u16,
+        socket_id: u32,
+        n_rxd: u16,
+        n_elem: u32,
+        dev_info: &rte_eth_dev_info,
+        eth_conf: &rte_eth_conf,
+    ) -> Result<Arc<Self>> {
         let mp = Mbuf::create_mp(
-            format!("rx_{}_{}", dev.port_id, queue_id).as_str(),
-            (nb_ports * (dev.n_rxd as u32 + dev.n_txd as u32 + 32)).max(8192),
+            format!("rx_{}_{}", port_id, queue_id).as_str(),
+            n_elem,
             0,
-            dev.socket_id(),
+            socket_id,
         )?;
-        let mut rx_conf = dev.dev_info.default_rxconf;
-        rx_conf.offloads = dev.eth_conf.rxmode.offloads;
+        let mut rx_conf = dev_info.default_rxconf;
+        rx_conf.offloads = eth_conf.rxmode.offloads;
         // SAFETY: ffi
         let errno = unsafe {
-            rte_eth_rx_queue_setup(
-                dev.port_id,
-                queue_id,
-                dev.n_rxd,
-                dev.socket_id,
-                &rx_conf,
-                mp.as_ptr(),
-            )
+            rte_eth_rx_queue_setup(port_id, queue_id, n_rxd, socket_id, &rx_conf, mp.as_ptr())
         };
         Error::from_ret(errno)?;
-        dev.rx_agent.register(dev.port_id, queue_id);
-        Ok(Arc::new(Self {
-            queue_id,
-            mp,
-            dev: dev.clone(),
-        }))
-    }
-}
-
-impl Drop for EthRxQueue {
-    fn drop(&mut self) {
-        self.dev
-            .rx_agent
-            .unregister(self.dev.port_id, self.queue_id);
+        Ok(Arc::new(Self { queue_id, mp }))
     }
 }
 
 #[allow(unsafe_code)]
 impl EthTxQueue {
     /// init
-    pub fn init(dev: &Arc<EthDev>, queue_id: u16) -> Result<Arc<Self>> {
+    fn init(
+        port_id: u16,
+        queue_id: u16,
+        socket_id: u32,
+        n_txd: u16,
+        dev_info: &rte_eth_dev_info,
+        eth_conf: &rte_eth_conf,
+    ) -> Result<Arc<Self>> {
         let mp = Mbuf::create_mp(
-            format!("tx_{}_{}", dev.port_id, queue_id).as_str(),
+            format!("tx_{}_{}", port_id, queue_id).as_str(),
             1024,
             0,
-            dev.socket_id(),
+            socket_id,
         )?;
-        let mut tx_conf = dev.dev_info.default_txconf;
-        tx_conf.offloads = dev.eth_conf.txmode.offloads;
+        let mut tx_conf = dev_info.default_txconf;
+        tx_conf.offloads = eth_conf.txmode.offloads;
         // SAFETY: ffi
-        let errno = unsafe {
-            rte_eth_tx_queue_setup(dev.port_id, queue_id, dev.n_txd, dev.socket_id, &tx_conf)
-        };
+        let errno =
+            unsafe { rte_eth_tx_queue_setup(port_id, queue_id, n_txd, socket_id, &tx_conf) };
         Error::from_ret(errno)?;
-        // XXX: what to do with buffer?
-        // We should implement buffer here in Rust
-        let tx = dev.tx_agent.register(dev.port_id, queue_id);
-        Ok(Arc::new(Self {
-            queue_id,
-            mp,
-            tx,
-            dev: dev.clone(),
-        }))
-    }
-
-    /// Send one packet.
-    pub async fn send(&self, pkt: impl Packet) -> Result<()> {
-        let mbuf = pkt.into_mbuf(&self.mp)?;
-        self.send_m(mbuf).await
-    }
-
-    /// Send one Mbuf.
-    #[inline(always)]
-    async fn send_m(&self, msg: Mbuf) -> Result<()> {
-        self.tx.send(msg).await.unwrap();
-        Ok(())
-    }
-}
-
-impl Drop for EthTxQueue {
-    fn drop(&mut self) {
-        self.dev
-            .tx_agent
-            .unregister(self.dev.port_id, self.queue_id);
+        Ok(Arc::new(Self { queue_id, mp }))
     }
 }

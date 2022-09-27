@@ -76,6 +76,7 @@ impl Error {
         let errno = unsafe { errno!() };
         errno.into()
     }
+
     #[inline]
     pub fn from_ret(errno: i32) -> Result<()> {
         let errno = -errno;

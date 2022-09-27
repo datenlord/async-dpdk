@@ -1,6 +1,6 @@
 //! Socket implementation
 
-use crate::{packet::GenericPacket, Error, Result};
+use crate::{packet::Packet, Error, Result};
 use lazy_static::lazy_static;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
@@ -24,7 +24,7 @@ pub(crate) enum SockState {
     InUse {
         port: u16,
         #[allow(dead_code)]
-        op: i32,
+        op: i32, // TODO socket op
     },
 }
 
@@ -44,7 +44,7 @@ impl Default for SockTable {
 #[derive(Debug)]
 struct SockTableInner {
     open: [SockState; MAX_SOCK_NUM],
-    free_fd: Vec<i32>,
+    free_fd: VecDeque<i32>,
 }
 
 impl Default for SockTableInner {
@@ -89,12 +89,12 @@ impl Default for MailboxTable {
 
 #[derive(Debug, Default)]
 pub(crate) struct Mailbox {
-    received: VecDeque<(SocketAddr, GenericPacket)>,
-    watcher: Option<oneshot::Sender<(SocketAddr, GenericPacket)>>,
+    received: VecDeque<(SocketAddr, Packet)>,
+    watcher: Option<oneshot::Sender<(SocketAddr, Packet)>>,
 }
 
 impl Mailbox {
-    pub(crate) fn recv(&mut self) -> oneshot::Receiver<(SocketAddr, GenericPacket)> {
+    pub(crate) fn recv(&mut self) -> oneshot::Receiver<(SocketAddr, Packet)> {
         let (tx, rx) = oneshot::channel();
         if let Some((addr, data)) = self.received.pop_front() {
             tx.send((addr, data)).unwrap();
@@ -104,7 +104,7 @@ impl Mailbox {
         rx
     }
 
-    pub(crate) fn put(&mut self, addr: SocketAddr, data: GenericPacket) {
+    pub(crate) fn put(&mut self, addr: SocketAddr, data: Packet) {
         if let Some(tx) = self.watcher.take() {
             tx.send((addr, data)).unwrap();
         } else {
@@ -114,12 +114,12 @@ impl Mailbox {
 }
 
 // Bind sockfd to a (ip, port) pair.
-pub(crate) fn bind_fd(addr: SocketAddr) -> Result<i32> {
+pub(crate) fn bind_fd(addr: SocketAddr) -> Result<(i32, u16)> {
     let mut inner = SOCK_TABLE.inner.lock().unwrap();
-    let fd = inner.free_fd.pop().ok_or(Error::NoBuf)?;
+    let fd = inner.free_fd.pop_front().ok_or(Error::NoBuf)?;
     let port = bind_port(addr.port(), addr.ip(), fd)?;
     inner.open[fd as usize] = SockState::InUse { port, op: 0 };
-    Ok(fd)
+    Ok((fd, port))
 }
 
 // Free the sockfd.
@@ -133,7 +133,7 @@ pub(crate) fn free_fd(fd: i32) -> Result<()> {
         _ => 0,
     };
     inner.open[fd as usize] = SockState::Unused;
-    inner.free_fd.push(fd);
+    inner.free_fd.push_front(fd);
     free_port(port);
     Ok(())
 }
@@ -170,15 +170,18 @@ fn free_port(port: u16) {
     let _ = PORT_TABLE.inner.lock().unwrap().info.remove(&port);
 }
 
-pub(crate) fn addr_2_sockfd(port: u16, dst_ip: IpAddr) -> Option<i32> {
+pub(crate) fn addr_2_sockfd(dst_port: u16, dst_ip: IpAddr) -> Option<i32> {
     let inner = PORT_TABLE.inner.lock().unwrap();
-    inner.info.get(&port).and_then(|&PortInfo { ip, fd, .. }| {
-        if ip.is_unspecified() || ip == dst_ip {
-            Some(fd)
-        } else {
-            None
-        }
-    })
+    inner
+        .info
+        .get(&dst_port)
+        .and_then(|&PortInfo { ip, fd, .. }| {
+            if ip.is_unspecified() || ip == dst_ip {
+                Some(fd)
+            } else {
+                None
+            }
+        })
 }
 
 pub(crate) fn alloc_mailbox(sockfd: i32) -> Arc<Mutex<Mailbox>> {
@@ -195,7 +198,7 @@ pub(crate) fn dealloc_mailbox(sockfd: i32) {
     let _ = MAILBOX_TABLE.inner.lock().unwrap().remove(&sockfd);
 }
 
-pub(crate) fn put_mailbox(sockfd: i32, addr: SocketAddr, data: GenericPacket) {
+pub(crate) fn put_mailbox(sockfd: i32, addr: SocketAddr, data: Packet) {
     if let Some(mailbox) = MAILBOX_TABLE.inner.lock().unwrap().get(&sockfd) {
         mailbox.lock().unwrap().put(addr, data);
     }

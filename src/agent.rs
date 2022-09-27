@@ -1,11 +1,10 @@
 //! RX/TX agent thread
 use dpdk_sys::{
-    rte_eth_rx_burst, rte_eth_tx_burst, rte_ether_hdr, rte_ipv4_hdr, rte_udp_hdr,
-    RTE_ETHER_TYPE_IPV4,
+    rte_eth_rx_burst, rte_eth_tx_burst, rte_ether_hdr, rte_ipv4_hdr, rte_ipv6_hdr,
+    RTE_ETHER_TYPE_ARP, RTE_ETHER_TYPE_IPV4, RTE_ETHER_TYPE_IPV6,
 };
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
-use std::net::{IpAddr, SocketAddr};
 use std::ptr;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -13,13 +12,13 @@ use std::sync::{
 };
 use tokio::{
     sync::mpsc,
-    task::{self, JoinHandle, LocalSet},
+    task::{self, JoinHandle},
 };
 
 use crate::mbuf::Mbuf;
-use crate::packet::GenericPacket;
-use crate::protocol::Packet;
-use crate::socket::{self, addr_2_sockfd};
+use crate::protocol::IP_NEXT_PROTO_UDP;
+
+use crate::udp::handle_ipv4_udp;
 
 const MAX_PKT_BURST: usize = 32;
 const TX_CHAN_SIZE: usize = 1024;
@@ -30,37 +29,49 @@ pub(crate) struct RxAgent {
 }
 
 pub(crate) struct TxAgent {
+    // TODO make a single-thread runtime to handle those tasks
     tasks: Mutex<BTreeMap<(u16, u16), JoinHandle<()>>>,
-    local_set: LocalSet,
 }
 
+#[inline]
 #[allow(unsafe_code)]
-fn classify(m: Mbuf) {
-    let data = m.data_slice();
-    let ether_hdr = unsafe { &*(data.as_ptr() as *const rte_ether_hdr) };
-    match ether_hdr.ether_type.to_le() as u32 {
-        RTE_ETHER_TYPE_IPV4 => {
-            #[allow(trivial_casts)]
-            let ip_hdr =
-                unsafe { &*((ether_hdr as *const rte_ether_hdr).add(1) as *const rte_ipv4_hdr) };
-            let dst_ip_bytes: [u8; 4] = ip_hdr.dst_addr.to_le_bytes(); // XXX little endian?
-            let dst_ip = IpAddr::from(dst_ip_bytes);
-            let src_ip_bytes: [u8; 4] = ip_hdr.src_addr.to_le_bytes(); // XXX little endian?
-            let src_ip = IpAddr::from(src_ip_bytes);
+fn handle_ether(m: Mbuf) {
+    // l3 protocol, l4 protocol
+    let (ether_type, proto_id) = {
+        let data = m.data_slice();
+        let ether_hdr = unsafe { &*(data.as_ptr() as *const rte_ether_hdr) };
+        let ether_type = ether_hdr.ether_type.to_be() as u32;
 
-            #[allow(trivial_casts)]
-            let udp_hdr =
-                unsafe { &*((ip_hdr as *const rte_ipv4_hdr).add(1) as *const rte_udp_hdr) };
-            let dst_port = udp_hdr.dst_port;
-            let src_port = udp_hdr.src_port;
-            let src_addr = SocketAddr::new(src_ip, src_port);
-
-            let packet = GenericPacket::from_mbuf(m).unwrap();
-            if let Some(sockfd) = addr_2_sockfd(dst_port, dst_ip) {
-                socket::put_mailbox(sockfd, src_addr, packet); // XXX ???
+        let proto_id = match ether_type {
+            RTE_ETHER_TYPE_IPV4 => {
+                #[allow(trivial_casts)]
+                let ip_hdr = unsafe {
+                    &*((ether_hdr as *const rte_ether_hdr).add(1) as *const rte_ipv4_hdr)
+                };
+                ip_hdr.next_proto_id
             }
-        }
-        _ => unimplemented!(),
+            RTE_ETHER_TYPE_IPV6 => {
+                #[allow(trivial_casts)]
+                let ip_hdr = unsafe {
+                    &*((ether_hdr as *const rte_ether_hdr).add(1) as *const rte_ipv6_hdr)
+                };
+                ip_hdr.proto
+            }
+            RTE_ETHER_TYPE_ARP => 0,
+            _ => 0,
+        };
+
+        (ether_type, proto_id)
+    };
+
+    match ether_type {
+        RTE_ETHER_TYPE_IPV4 => match proto_id {
+            IP_NEXT_PROTO_UDP => handle_ipv4_udp(m),
+            _ => {}
+        },
+        RTE_ETHER_TYPE_IPV6 => {}
+        RTE_ETHER_TYPE_ARP => {}
+        ether_type => eprintln!("Unsupported ether type {ether_type:x}"),
     }
 }
 
@@ -84,7 +95,7 @@ impl RxAgent {
                     };
                     for i in 0..n as usize {
                         let m = Mbuf::new_with_ptr(ptrs[i]).unwrap();
-                        classify(m);
+                        handle_ether(m);
                     }
                 }
             }
@@ -109,7 +120,6 @@ impl RxAgent {
 impl TxAgent {
     pub(crate) fn start() -> Arc<Self> {
         let this = TxAgent {
-            local_set: LocalSet::new(),
             tasks: Mutex::new(BTreeMap::new()),
         };
         Arc::new(this)
@@ -117,11 +127,12 @@ impl TxAgent {
 
     pub(crate) fn register(self: &Arc<Self>, port_id: u16, queue_id: u16) -> mpsc::Sender<Mbuf> {
         let (tx, mut rx) = mpsc::channel::<Mbuf>(TX_CHAN_SIZE);
-        let handle = self.local_set.spawn_local(async move {
+        let handle = task::spawn(async move {
             while let Some(m) = rx.recv().await {
                 let mut ptrs = vec![m.as_ptr()];
                 mem::forget(m);
                 // SAFETY: ffi
+                // TODO handle unsent packets
                 let _n = unsafe {
                     rte_eth_tx_burst(port_id, queue_id, ptrs.as_mut_ptr(), ptrs.len() as _)
                 };

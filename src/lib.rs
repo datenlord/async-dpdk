@@ -110,6 +110,8 @@
     clippy::multiple_crate_versions, // caused by the dependency, can't be fixed
 )]
 
+// #![feature(ptr_sub_ptr)]
+
 pub use dpdk_sys::{eth_foreach_dev, lcore_foreach, lcore_foreach_worker};
 
 pub mod alloc;
