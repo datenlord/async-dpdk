@@ -5,7 +5,7 @@ use crate::{
     mbuf::Mbuf,
     net_dev,
     packet::Packet,
-    protocol::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN},
+    protocol::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP},
     socket::{self, addr_2_sockfd, Mailbox},
     Error, Result,
 };
@@ -114,7 +114,7 @@ impl UdpSocket {
         ip_hdr.packet_id = 0u16.to_be(); // TODO some meaningful data
         ip_hdr.fragment_offset = 0u16.to_be();
         ip_hdr.time_to_live = 64;
-        ip_hdr.next_proto_id = 0x11; // XXX UDP protocol id
+        ip_hdr.next_proto_id = IP_NEXT_PROTO_UDP;
         ip_hdr.dst_addr = match addr.ip() {
             IpAddr::V4(addr) => u32::from_ne_bytes(addr.octets()),
             IpAddr::V6(_) => unimplemented!(),
@@ -161,12 +161,14 @@ impl Drop for UdpSocket {
 }
 
 #[allow(unsafe_code)]
-pub(crate) fn handle_ipv4_udp(m: Mbuf) {
+pub(crate) fn handle_ipv4_udp(mut m: Mbuf) {
+    // Parse IPv4 and UDP header.
     let data = m.data_slice();
-    let ether_hdr = unsafe { &*(data.as_ptr() as *const rte_ether_hdr) };
+
+    let eth_hdr = unsafe { &*(data.as_ptr() as *const rte_ether_hdr) };
 
     #[allow(trivial_casts)]
-    let ip_hdr = unsafe { &*((ether_hdr as *const rte_ether_hdr).add(1) as *const rte_ipv4_hdr) };
+    let ip_hdr = unsafe { &*((eth_hdr as *const rte_ether_hdr).add(1) as *const rte_ipv4_hdr) };
     let dst_ip_bytes: [u8; 4] = ip_hdr.dst_addr.to_ne_bytes();
     let dst_ip = IpAddr::from(dst_ip_bytes);
     let src_ip_bytes: [u8; 4] = ip_hdr.src_addr.to_ne_bytes();
@@ -177,12 +179,20 @@ pub(crate) fn handle_ipv4_udp(m: Mbuf) {
     let dst_port = udp_hdr.dst_port;
     let src_port = udp_hdr.src_port;
     let _len = udp_hdr.dgram_len.to_be();
-
     let src_addr = SocketAddr::new(src_ip, src_port);
+
+    let hdr_len = ETHER_HDR_LEN + L3Protocol::Ipv4.length() + L4Protocol::UDP.length();
+    m.adj(hdr_len).unwrap();
     let packet = Packet::from_mbuf(m).unwrap();
+
     if let Some(sockfd) = addr_2_sockfd(dst_port, dst_ip) {
         socket::put_mailbox(sockfd, src_addr, packet);
     } else {
-        eprintln!("sockfd not found ip={dst_ip:?}, port={dst_port}");
+        eprintln!("sockfd not found: {dst_ip:?}:{dst_port}");
     }
+}
+
+#[allow(unsafe_code)]
+pub(crate) fn handle_ipv6_udp(_m: Mbuf) {
+    todo!()
 }

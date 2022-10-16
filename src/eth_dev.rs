@@ -233,8 +233,7 @@ impl Debug for EthDev {
 struct EthRxQueue {
     #[allow(dead_code)]
     queue_id: u16,
-    #[allow(dead_code)]
-    mp: Mempool,
+    _mp: Mempool,
 }
 
 /// An Ethernet device tx queue.
@@ -285,7 +284,7 @@ impl EthRxQueue {
             rte_eth_rx_queue_setup(port_id, queue_id, n_rxd, socket_id, &rx_conf, mp.as_ptr())
         };
         Error::from_ret(errno)?;
-        Ok(Arc::new(Self { queue_id, mp }))
+        Ok(Arc::new(Self { queue_id, _mp: mp }))
     }
 }
 

@@ -45,6 +45,7 @@ impl Packet {
     }
 
     pub(crate) fn from_mbuf(m: Mbuf) -> Result<Self> {
+        // XXX protocol information in rte_mbuf may not be correct
         let (l3protocol, l4protocol): (L3Protocol, L4Protocol) = {
             let m = unsafe { &*m.as_ptr() };
             let pkt_type = unsafe { m.packet_type_union.packet_type };
@@ -52,10 +53,12 @@ impl Packet {
         };
         let mut frags = vec![];
         let mut cur = &m;
-        let hdr_len = ETHER_HDR_LEN + l3protocol.length() + l4protocol.length();
+
+        let data = cur.data_slice();
+        frags.push(data.into()); // TODO zero-copy
 
         while let Some(c) = cur.next() {
-            let data = &cur.data_slice()[hdr_len..];
+            let data = c.data_slice();
             frags.push(data.into()); // TODO zero-copy
             cur = c;
         }

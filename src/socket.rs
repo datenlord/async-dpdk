@@ -62,7 +62,6 @@ struct PortTable {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 struct PortInfo {
     fd: i32, // sockfd
     ip: IpAddr,

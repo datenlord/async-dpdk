@@ -16,7 +16,7 @@ async fn client() {
 
 async fn server() {
     let socket = UdpSocket::bind("10.2.3.0:1234").unwrap();
-    let mut data = vec![0; 30];
+    let mut data = vec![0; 40];
     let (sz, addr) = socket.recv_from(&mut data[..]).await.unwrap();
     assert_eq!(sz, MSG.len());
     assert_eq!(addr.ip(), IpAddr::from([10, 2, 3, 1]));
