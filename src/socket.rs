@@ -5,7 +5,7 @@ use lazy_static::lazy_static;
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     net::{IpAddr, SocketAddr},
-    sync::{Arc, Mutex},
+    sync::{atomic::AtomicU16, Arc, Mutex},
 };
 use tokio::sync::oneshot;
 
@@ -13,6 +13,7 @@ lazy_static! {
     static ref SOCK_TABLE: SockTable = SockTable::default();
     static ref PORT_TABLE: PortTable = PortTable::default();
     static ref MAILBOX_TABLE: MailboxTable = MailboxTable::default();
+    pub(crate) static ref IPID: AtomicU16 = AtomicU16::new(1);
 }
 
 const MAX_SOCK_NUM: usize = 1024;
@@ -23,8 +24,6 @@ pub(crate) enum SockState {
     Unused,
     InUse {
         port: u16,
-        #[allow(dead_code)]
-        op: i32, // TODO socket op
     },
 }
 
@@ -117,7 +116,7 @@ pub(crate) fn bind_fd(addr: SocketAddr) -> Result<(i32, u16)> {
     let mut inner = SOCK_TABLE.inner.lock().unwrap();
     let fd = inner.free_fd.pop_front().ok_or(Error::NoBuf)?;
     let port = bind_port(addr.port(), addr.ip(), fd)?;
-    inner.open[fd as usize] = SockState::InUse { port, op: 0 };
+    inner.open[fd as usize] = SockState::InUse { port };
     Ok((fd, port))
 }
 

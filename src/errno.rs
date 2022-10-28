@@ -81,9 +81,8 @@ impl Error {
     pub fn from_ret(errno: i32) -> Result<()> {
         let errno = -errno;
         match errno {
-            0 => Ok(()),
-            e if e > 0 => Err(e.into()),
-            e => unreachable!("errno = {}", e),
+            e if e <= 0 => Ok(()),
+            e => Err(e.into()),
         }
     }
 

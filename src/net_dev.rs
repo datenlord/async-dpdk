@@ -34,6 +34,9 @@ pub fn device_probe(addr_str: &[&str]) -> Result<()> {
     }
 
     let ndev = EthDev::available_ports();
+    if (ndev as usize) < addr_str.len() {
+        return Err(Error::InvalidArg);
+    }
     let ndev = addrs.len().min(ndev as usize);
     for i in 0..ndev {
         let port_id = i as u16;

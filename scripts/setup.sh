@@ -14,6 +14,6 @@ modprobe vfio vfio-pci
 echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode
 # modprobe vfio enable_unsafe_noiommu_mode=1
 
-/home/luo/dpdk/usertools/dpdk-devbind.py -b=vfio-pci 02:02.0 02:03.0
+usertools/dpdk-devbind.py -b=vfio-pci 02:02.0 02:03.0
 
-# /home/luo/dpdk/usertools/dpdk-devbind.py -u 02:02.0 02:03.0
+# ../usertools/dpdk-devbind.py -u 02:02.0 02:03.0

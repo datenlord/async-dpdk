@@ -87,13 +87,35 @@ pub struct Builder {
     args: Vec<CString>,
 }
 
-#[derive(Debug, Clone, Copy)]
 /// IOVA mode.
+#[derive(Debug, Clone, Copy)]
 pub enum IovaMode {
     /// physical address
     PA,
     /// virtual address
     VA,
+}
+
+/// DPDK log level.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy)]
+pub enum LogLevel {
+    /// System is unusable
+    Emergency = 1,
+    /// Action must be taken immediately
+    Alert = 2,
+    /// Critical conditions
+    Critical = 3,
+    /// Error conditions
+    Error = 4,
+    /// Warning conditions
+    Warn = 5,
+    /// Normal but significant conditions
+    Notice = 6,
+    /// Informational
+    Info = 7,
+    /// Debug-level messages
+    Debug = 8,
 }
 
 impl Builder {
@@ -203,6 +225,14 @@ impl Builder {
             IovaMode::PA => self.args.push(CString::new("pa").unwrap()),
             IovaMode::VA => self.args.push(CString::new("va").unwrap()),
         }
+        self
+    }
+
+    /// Set log level
+    pub fn log_level(mut self, log_level: LogLevel) -> Self {
+        self.args.push(CString::new("--log-level").unwrap());
+        self.args
+            .push(CString::new((log_level as u32).to_string()).unwrap());
         self
     }
 

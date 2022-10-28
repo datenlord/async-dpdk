@@ -3,7 +3,6 @@
 use crate::mempool::{Mempool, MempoolInner};
 use crate::{Error, Result};
 use dpdk_sys::*;
-use std::mem;
 use std::{mem::MaybeUninit, ptr::NonNull, slice};
 
 ///
@@ -253,13 +252,10 @@ impl Mbuf {
     }
 
     /// Get the next Mbuf chained.
-    pub fn next(&self) -> Option<&Mbuf> {
+    pub fn next(&self) -> Option<Mbuf> {
         // SAFETY: self is valid since it's tested when initialized.
         let ptr = unsafe { (*self.as_ptr()).next };
         let m = Mbuf::new_with_ptr(ptr).ok()?;
-        // SAFETY: self's next should have the same lifetime as self.
-        let m = unsafe { mem::transmute(&m) };
-        mem::forget(m);
         Some(m)
     }
 

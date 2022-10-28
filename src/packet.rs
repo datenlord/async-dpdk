@@ -45,14 +45,14 @@ impl Packet {
     }
 
     pub(crate) fn from_mbuf(m: Mbuf) -> Result<Self> {
-        // XXX protocol information in rte_mbuf may not be correct
+        // XXX protocol information in rte_mbuf may be incorrect
         let (l3protocol, l4protocol): (L3Protocol, L4Protocol) = {
             let m = unsafe { &*m.as_ptr() };
             let pkt_type = unsafe { m.packet_type_union.packet_type };
             ((pkt_type & L3_MASK).into(), (pkt_type & L4_MASK).into())
         };
         let mut frags = vec![];
-        let mut cur = &m;
+        let mut cur = m;
 
         let data = cur.data_slice();
         frags.push(data.into()); // TODO zero-copy

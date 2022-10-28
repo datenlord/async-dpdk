@@ -64,7 +64,7 @@ impl EthDev {
 
         // XXX now we use one TxAgent and one RxAgent for each EthDev.
         // Make the mapping more flexible.
-        let rx_agent = RxAgent::start();
+        let rx_agent = RxAgent::start(socket_id);
         let tx_agent = TxAgent::start();
 
         let nb_ports = EthDev::available_ports();
@@ -102,18 +102,6 @@ impl EthDev {
         self.socket_id
     }
 
-    /// Init tx queue and rx queue.
-    fn start_queue(&mut self) -> Result<()> {
-        for (queue_id, chan) in self.tx_chan.iter_mut().enumerate() {
-            *chan = Some(self.tx_agent.register(self.port_id, queue_id as _));
-        }
-        self.rx_queue
-            .iter()
-            .enumerate()
-            .for_each(|(queue_id, _)| self.rx_agent.register(self.port_id, queue_id as _));
-        Ok(())
-    }
-
     /// Stop tx queue and rx queue.
     fn stop_queue(&self) -> Result<()> {
         self.tx_queue
@@ -143,7 +131,15 @@ impl EthDev {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_set_ptypes(self.port_id, 0, ptr::null_mut(), 0) };
         Error::from_ret(errno)?;
-        self.start_queue()?;
+        // Start tx agent
+        for (queue_id, chan) in self.tx_chan.iter_mut().enumerate() {
+            *chan = Some(self.tx_agent.register(self.port_id, queue_id as _));
+        }
+        // Start rx agent
+        self.rx_queue
+            .iter()
+            .enumerate()
+            .for_each(|(queue_id, _)| self.rx_agent.register(self.port_id, queue_id as _));
         Ok(())
     }
 
