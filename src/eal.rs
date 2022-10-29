@@ -2,7 +2,10 @@
 
 use crate::net_dev;
 use crate::{Error, Result};
-use dpdk_sys::*;
+use dpdk_sys::{
+    rte_eal_cleanup, rte_eal_get_runtime_dir, rte_eal_has_hugepages, rte_eal_has_pci, rte_eal_init,
+    rte_mp_disable,
+};
 use lazy_static::lazy_static;
 use std::ffi::CString;
 use std::net::IpAddr;
@@ -16,23 +19,19 @@ lazy_static! {
 
 /// EAL
 #[derive(Debug)]
+#[allow(clippy::exhaustive_structs)]
 pub struct Eal {}
 
 #[allow(unsafe_code)]
 unsafe impl Sync for Eal {}
-
-/// Check if a primary process is currently alive.
-///
-/// This function returns true when a primary process is currently active.
-pub fn primary_proc_alive() -> bool {
-    todo!()
-}
 
 /// Disable multiprocess.
 ///
 /// This function can be called to indicate that multiprocess won't be used for the rest of
 /// the application life.
 #[allow(unsafe_code)]
+#[inline]
+#[must_use]
 pub fn disable_mp() -> bool {
     // SAFETY: ffi
     unsafe { rte_mp_disable() }
@@ -40,6 +39,8 @@ pub fn disable_mp() -> bool {
 
 /// Whether EAL is using hugepages.
 #[allow(unsafe_code)]
+#[inline]
+#[must_use]
 pub fn has_hugepages() -> bool {
     // SAFETY: ffi
     unsafe { rte_eal_has_hugepages() != 0 }
@@ -47,38 +48,31 @@ pub fn has_hugepages() -> bool {
 
 /// Whether EAL is using PCI bus. Disabled by –no-pci option.
 #[allow(unsafe_code)]
+#[inline]
+#[must_use]
 pub fn has_pci() -> bool {
     // SAFETY: ffi
     unsafe { rte_eal_has_pci() != 0 }
 }
 
-/// Whether the EAL was asked to create UIO device.
-#[allow(unsafe_code)]
-pub fn uio_created() -> bool {
-    // SAFETY: ffi
-    unsafe { rte_eal_create_uio_dev() != 0 }
-}
-
-/// The user-configured vfio interrupt mode.
-#[allow(unsafe_code)]
-pub fn vfio_intr_mode() {
-    todo!()
-}
-
 /// Get the runtime directory of DPDK
 #[allow(unsafe_code)]
+#[inline]
+#[must_use]
 pub fn runtime_dir() -> PathBuf {
     // SAFETY: ffi
     let ptr = unsafe { rte_eal_get_runtime_dir() };
     // SAFETY: read C string
     let cs = unsafe { CString::from_raw(ptr as _) };
+    #[allow(clippy::unwrap_used)]
     PathBuf::from(cs.into_string().unwrap())
 }
 
 impl Drop for Eal {
+    #[inline]
     fn drop(&mut self) {
         // Close all devices
-        net_dev::device_close().unwrap();
+        net_dev::device_close();
         // SAFETY: ffi
         #[allow(unsafe_code)]
         let errno = unsafe { rte_eal_cleanup() };
@@ -89,12 +83,15 @@ impl Drop for Eal {
 /// EAL Builder
 #[derive(Debug, Default)]
 pub struct Config {
+    /// Args passed to `rte_eal_init`.
     args: Vec<CString>,
+    /// IP addresses for each `EthDev`s.
     addrs: Vec<IpAddr>,
 }
 
 /// IOVA mode.
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::exhaustive_enums)]
 pub enum IovaMode {
     /// physical address
     PA,
@@ -105,6 +102,7 @@ pub enum IovaMode {
 /// DPDK log level.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
+#[allow(clippy::exhaustive_enums)]
 pub enum LogLevel {
     /// System is unusable
     Emergency = 1,
@@ -124,8 +122,11 @@ pub enum LogLevel {
     Debug = 8,
 }
 
+#[allow(clippy::unwrap_used)] // Create `CString`s
 impl Config {
     /// Create a new eal builder.
+    #[inline]
+    #[must_use]
     pub fn new() -> Self {
         let env_args = std::env::args().collect::<Vec<_>>();
         Self {
@@ -135,6 +136,8 @@ impl Config {
     }
 
     /// Probe devices or not.
+    #[inline]
+    #[must_use]
     pub fn device_probe(mut self, addr_str: &[&str]) -> Self {
         for addr in addr_str.iter() {
             self.addrs.push(IpAddr::from_str(addr).unwrap());
@@ -143,6 +146,8 @@ impl Config {
     }
 
     /// Set core mask to EAL.
+    #[inline]
+    #[must_use]
     pub fn coremask(mut self, mask: u64) -> Self {
         self.args.push(CString::new("-c").unwrap());
         self.args.push(CString::new(mask.to_string()).unwrap());
@@ -150,6 +155,8 @@ impl Config {
     }
 
     /// Set core list to EAL.
+    #[inline]
+    #[must_use]
     pub fn corelist(mut self, list: &str) -> Self {
         self.args.push(CString::new("-l").unwrap());
         self.args.push(CString::new(list).unwrap());
@@ -157,27 +164,17 @@ impl Config {
     }
 
     /// Set core map to EAL.
+    #[inline]
+    #[must_use]
     pub fn coremap(mut self, map: &str) -> Self {
         self.args.push(CString::new("-lcores").unwrap());
         self.args.push(CString::new(map).unwrap());
         self
     }
 
-    /// Set master lcore.
-    pub fn master_core(mut self, id: u64) -> Self {
-        self.args.push(CString::new("--master-lcore").unwrap());
-        self.args.push(CString::new(id.to_string()).unwrap());
-        self
-    }
-
-    /// Set service lcores.
-    pub fn service_cores(mut self, mask: u64) -> Self {
-        self.args.push(CString::new("-s").unwrap());
-        self.args.push(CString::new(mask.to_string()).unwrap());
-        self
-    }
-
     /// Set pci blacklist.
+    #[inline]
+    #[must_use]
     pub fn pci_blacklist(mut self, name: &str) -> Self {
         self.args.push(CString::new("-b").unwrap());
         self.args.push(CString::new(name).unwrap());
@@ -185,6 +182,8 @@ impl Config {
     }
 
     /// Set pci whitelist.
+    #[inline]
+    #[must_use]
     pub fn pci_whitelist(mut self, name: &str) -> Self {
         self.args.push(CString::new("-w").unwrap());
         self.args.push(CString::new(name).unwrap());
@@ -192,6 +191,8 @@ impl Config {
     }
 
     /// Disable PCI.
+    #[inline]
+    #[must_use]
     pub fn no_pci(mut self, no_pci: bool) -> Self {
         if no_pci {
             self.args.push(CString::new("--no-pci").unwrap());
@@ -199,34 +200,9 @@ impl Config {
         self
     }
 
-    /// Add a vdev.
-    pub fn vdev(mut self, vdev: &str) -> Self {
-        self.args.push(CString::new("--vdev").unwrap());
-        self.args.push(CString::new(vdev).unwrap());
-        self
-    }
-
-    /// Number of socket channels.
-    pub fn num_channels(mut self, channels: u32) -> Self {
-        self.args.push(CString::new("-n").unwrap());
-        self.args.push(CString::new(channels.to_string()).unwrap());
-        self
-    }
-
-    /// Number of memory ranks.
-    pub fn num_ranks(mut self, ranks: u32) -> Self {
-        self.args.push(CString::new("-r").unwrap());
-        self.args.push(CString::new(ranks.to_string()).unwrap());
-        self
-    }
-
-    /// Set in-memory.
-    pub fn in_memory(mut self) -> Self {
-        self.args.push(CString::new("--in-memory").unwrap());
-        self
-    }
-
     /// Reserved memory on start in megabytes.
+    #[inline]
+    #[must_use]
     pub fn memory_mb(mut self, size: u32) -> Self {
         self.args.push(CString::new("-m").unwrap());
         self.args.push(CString::new(size.to_string()).unwrap());
@@ -234,6 +210,8 @@ impl Config {
     }
 
     /// Set iova mode.
+    #[inline]
+    #[must_use]
     pub fn iova_mode(mut self, mode: IovaMode) -> Self {
         self.args.push(CString::new("--iova-mode").unwrap());
         match mode {
@@ -244,6 +222,8 @@ impl Config {
     }
 
     /// Set log level
+    #[inline]
+    #[must_use]
     pub fn log_level(mut self, log_level: LogLevel) -> Self {
         self.args.push(CString::new("--log-level").unwrap());
         self.args
@@ -254,7 +234,10 @@ impl Config {
     /// It calls `rte_eal_init` to initialize the Environment Abstraction Layer (EAL). This function
     /// is to be executed on the MAIN lcore only, as soon as possible in the application's main()
     /// function. It puts the WORKER lcores in the WAIT state.
+    #[inline]
+    #[allow(clippy::unwrap_in_result)]
     pub fn enter(self) -> Result<()> {
+        #[allow(clippy::unwrap_used)]
         if CONTEXT.read().unwrap().is_some() {
             return Err(Error::Already);
         }
@@ -270,7 +253,8 @@ impl Config {
             return Err(Error::from_errno());
         }
         let context = Arc::new(Eal {});
-        *CONTEXT.write().unwrap() = Some(context.clone());
+        #[allow(clippy::unwrap_used)]
+        *CONTEXT.write().unwrap() = Some(context);
         net_dev::device_probe(self.addrs)?;
         Ok(())
     }

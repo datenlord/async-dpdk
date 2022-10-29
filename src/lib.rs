@@ -30,7 +30,7 @@
     unreachable_pub,
     unsafe_code,
     unsafe_op_in_unsafe_fn,
-    unstable_features,
+    // unstable_features, // this crate depends on a nightly crate
     // unused_crate_dependencies, the false positive case blocks us
     unused_extern_crates,
     unused_import_braces,
@@ -46,7 +46,7 @@
     clippy::cargo,
 
     // The followings are selected restriction lints for rust 1.57
-    clippy::as_conversions,
+    // clippy::as_conversions,
     clippy::clone_on_ref_ptr,
     clippy::create_dir,
     clippy::dbg_macro,
@@ -64,15 +64,15 @@
     clippy::get_unwrap,
     clippy::if_then_some_else_none,
     // clippy::implicit_return, it's idiomatic Rust code.
-    clippy::indexing_slicing,
+    // clippy::indexing_slicing, required in the project
     // clippy::inline_asm_x86_att_syntax, stick to intel syntax
     clippy::inline_asm_x86_intel_syntax,
-    clippy::integer_arithmetic,
+    // clippy::integer_arithmetic, required in the project
     // clippy::integer_division, required in the project
     clippy::let_underscore_must_use,
     clippy::lossy_float_literal,
     clippy::map_err_ignore,
-    clippy::mem_forget,
+    // clippy::mem_forget, required in the project
     clippy::missing_docs_in_private_items,
     clippy::missing_enforced_import_renames,
     clippy::missing_inline_in_public_items,
@@ -108,9 +108,12 @@
 )]
 #![allow(
     clippy::multiple_crate_versions, // caused by the dependency, can't be fixed
+    clippy::cast_possible_truncation, // TODO
+    clippy::cast_possible_wrap,
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
 )]
-
-// #![feature(ptr_sub_ptr)]
+#![feature(stmt_expr_attributes)]
 
 pub use dpdk_sys::{eth_foreach_dev, lcore_foreach, lcore_foreach_worker};
 
@@ -122,7 +125,7 @@ pub mod mbuf;
 pub mod mempool;
 pub mod net_dev;
 pub mod packet;
-pub mod protocol;
+pub mod proto;
 pub mod udp;
 
 mod agent;

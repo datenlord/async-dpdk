@@ -1,12 +1,13 @@
 //! DPDK defined error numbers.
 use dpdk_sys::{errno, rte_exit, rte_strerror};
-use std::os::raw::*;
+use std::os::raw::c_int;
 
-#[allow(missing_docs)]
+/// async-dpdk defined Result.
 pub type Result<T> = std::result::Result<T, Error>;
 
-#[allow(missing_docs)]
+#[allow(missing_docs, clippy::missing_docs_in_private_items)]
 #[repr(i32)]
+#[non_exhaustive]
 #[derive(Copy, Clone, Debug, thiserror::Error)]
 pub enum Error {
     #[error("Operation not permitted")]
@@ -67,9 +68,10 @@ pub enum Error {
     Unknown = -1003,
 }
 
-#[allow(missing_docs)]
+#[allow(missing_docs, clippy::missing_docs_in_private_items)]
 impl Error {
     #[inline]
+    #[allow(clippy::must_use_candidate)]
     pub fn from_errno() -> Error {
         // SAFETY: read mutable static variable
         #[allow(unsafe_code)]
@@ -99,9 +101,10 @@ impl Error {
     }
 }
 
-impl Into<Error> for i32 {
-    fn into(self) -> Error {
-        match self {
+impl From<i32> for Error {
+    #[inline]
+    fn from(errno: i32) -> Self {
+        match errno {
             libc::EPERM => Error::NoPerm,
             libc::ENOENT => Error::NoEntry,
             libc::ESRCH => Error::NoProc,
@@ -130,7 +133,7 @@ impl Into<Error> for i32 {
             1001 => Error::Secondary,
             1002 => Error::NoConfig,
             e if e > 0 => Error::Unknown,
-            _ => unreachable!("errno = {}", self), // negative number
+            _ => unreachable!("errno = {}", errno), // negative number
         }
     }
 }

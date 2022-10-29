@@ -9,8 +9,8 @@ mod net {
         use super::*;
         use std::net::{IpAddr, SocketAddr};
 
-        const MSG: &'static str = "this is client message";
-        const ACK: &'static str = "this is ack message";
+        const MSG: &str = "this is client message";
+        const ACK: &str = "this is ack message";
 
         async fn server() {
             let socket = UdpSocket::bind("10.2.3.0:1234").unwrap();

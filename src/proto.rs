@@ -5,17 +5,23 @@ use dpdk_sys::{
     RTE_PTYPE_UNKNOWN,
 };
 
+/// Indicating that the struct is a protocol.
 pub(crate) trait Protocol {
+    /// Protocol header length.
     fn length(&self) -> usize;
 }
 
-// pub(crate) const IP_NEXT_PROTO_TCP: u8 = 0x06;
+/// UDP `proto_id`, to be populated in IP header.
 pub(crate) const IP_NEXT_PROTO_UDP: u8 = 0x11;
 
+/// Ethernet header length.
 pub(crate) const ETHER_HDR_LEN: usize = 14;
+
+/// Ether proto number, to be populated in `rte_mbuf`.
 pub(crate) const PTYPE_L2_ETHER: u32 = RTE_PTYPE_L2_ETHER;
 
 #[repr(u32)]
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 /// L3 protocol.
 pub enum L3Protocol {
@@ -37,18 +43,21 @@ impl Protocol for L3Protocol {
     }
 }
 
-impl Into<L3Protocol> for u32 {
-    fn into(self) -> L3Protocol {
-        match self {
+impl From<u32> for L3Protocol {
+    #[inline]
+    fn from(num: u32) -> L3Protocol {
+        match num {
             RTE_PTYPE_UNKNOWN => L3Protocol::Unknown,
             RTE_PTYPE_L3_IPV4 => L3Protocol::Ipv4,
             RTE_PTYPE_L3_IPV6 => L3Protocol::Ipv6,
-            _ => unimplemented!("unknown l3 protocol number {self}"),
+            #[allow(clippy::unimplemented)]
+            _ => unimplemented!("unknown l3 protocol number {num}"),
         }
     }
 }
 
 #[repr(u32)]
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy)]
 /// L4 protocol.
 pub enum L4Protocol {
@@ -70,23 +79,15 @@ impl Protocol for L4Protocol {
     }
 }
 
-impl Into<L4Protocol> for u32 {
-    fn into(self) -> L4Protocol {
-        match self {
+impl From<u32> for L4Protocol {
+    #[inline]
+    fn from(num: u32) -> L4Protocol {
+        match num {
             RTE_PTYPE_UNKNOWN => L4Protocol::Unknown,
             RTE_PTYPE_L4_UDP => L4Protocol::UDP,
             RTE_PTYPE_L4_TCP => L4Protocol::TCP,
-            _ => unimplemented!("unknown l4 protocol number {self}"),
+            #[allow(clippy::unimplemented)]
+            _ => unimplemented!("unknown l4 protocol number {num}"),
         }
     }
 }
-
-// /// Packet is a general trait for l2/l3/l4 protocol packets.
-// /// It can be converted from and into Mbuf.
-// /// The conversion should be zero-copy!!!
-// pub trait Packet: Sized {
-//     /// Generate Packet from a Mbuf
-//     fn from_mbuf(m: Mbuf) -> Result<Self>;
-//     /// Convert Packet into a Mbuf.
-//     fn into_mbuf(self, mp: &Mempool) -> Result<Mbuf>;
-// }

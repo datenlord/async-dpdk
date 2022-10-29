@@ -1,4 +1,4 @@
-//! EthDev wrapping
+//! `EthDev` wrapping
 use crate::{
     agent::{RxAgent, TxAgent},
     mbuf::Mbuf,
@@ -6,64 +6,89 @@ use crate::{
     packet::Packet,
     Error, Result,
 };
-use dpdk_sys::*;
+use dpdk_sys::{
+    rte_eth_conf, rte_eth_dev_adjust_nb_rx_tx_desc, rte_eth_dev_close, rte_eth_dev_configure,
+    rte_eth_dev_count_avail, rte_eth_dev_info, rte_eth_dev_info_get, rte_eth_dev_set_ptypes,
+    rte_eth_dev_socket_id, rte_eth_dev_start, rte_eth_dev_stop, rte_eth_macaddr_get,
+    rte_eth_promiscuous_disable, rte_eth_promiscuous_enable, rte_eth_promiscuous_get,
+    rte_eth_rx_queue_setup, rte_eth_tx_queue_setup, rte_ether_addr,
+    RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
+};
 use std::{fmt::Debug, mem::MaybeUninit, ptr, sync::Arc};
 use tokio::sync::mpsc;
 
-#[allow(missing_copy_implementations)]
 /// An Ethernet device.
+#[allow(missing_copy_implementations)]
 pub struct EthDev {
+    /// `port_id` identifying this `EthDev`.
     port_id: u16,
+    /// `socket_id` that this `EthDev` is on.
     socket_id: u32,
+    /// An agent tx thread if the device is started.
     tx_agent: Option<Arc<TxAgent>>,
+    /// An agent rx thread if the device is started.
     rx_agent: Option<Arc<RxAgent>>,
+    /// `EthTxQueue` for each queue.
     tx_queue: Vec<Arc<EthTxQueue>>,
+    /// `EthRxQueue` for each queue.
     rx_queue: Vec<Arc<EthRxQueue>>,
+    /// `TxSender` to send `Mbuf`s to `tx_queue`.
     tx_chan: Vec<Option<mpsc::Sender<Mbuf>>>,
 }
 
 #[allow(unsafe_code)]
 impl EthDev {
     /// Get the number of ports which are usable for the application.
+    #[inline]
+    #[must_use]
     pub fn available_ports() -> u32 {
         // SAFETY: ffi
-        unsafe { rte_eth_dev_count_avail() as u32 }
+        unsafe { u32::from(rte_eth_dev_count_avail()) }
     }
 
-    /// Create an instance of EthDev.
+    /// Create an instance of `EthDev`.
     ///
     /// During this process, it does some initialization to the device:
     ///  1. Confugure the number of tx / rx queues.
     ///  2. Adjust the number of tx / rx desc.
+    #[inline]
+    #[allow(clippy::similar_names)] // tx and rx are DPDK terms
     pub fn new(port_id: u16, n_rxq: u16, n_txq: u16) -> Result<Self> {
         let mut dev_info = MaybeUninit::<rte_eth_dev_info>::uninit();
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_info_get(port_id, dev_info.as_mut_ptr()) };
         Error::from_ret(errno)?;
+        // SAFETY: `dev_info` init in `rte_eth_dev_info_get`
         let dev_info = unsafe { dev_info.assume_init() };
 
         // SAFETY: ffi
         let eth_conf = MaybeUninit::<rte_eth_conf>::zeroed();
+        // SAFETY: `eth_conf` set to zero, which is valid
         let mut eth_conf = unsafe { eth_conf.assume_init() };
         if dev_info.tx_offload_capa & RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE != 0 {
             // Enable fast release of mbufs if supported by the hardware.
             eth_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
         }
+        // SAFETY: ffi
+        #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_configure(port_id, n_rxq, n_txq, &eth_conf) };
         Error::from_ret(errno)?;
         let mut n_rxd = 1024;
         let mut n_txd = 1024;
         // SAFETY: ffi
+        #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &mut n_rxd, &mut n_txd) };
         Error::from_ret(errno)?;
+        // SAFETY: ffi
         let socket_id = unsafe { rte_eth_dev_socket_id(port_id) };
         if socket_id < 0 {
             return Err(Error::InvalidArg); // port_id is invalid
         }
+        #[allow(clippy::cast_sign_loss)] // `socket_id` is greater than 0
         let socket_id = socket_id as u32;
 
         let nb_ports = EthDev::available_ports();
-        let n_elem = (nb_ports * (n_rxd as u32 + n_txd as u32 + 32)).max(8192);
+        let n_elem = (nb_ports * (u32::from(n_rxd) + u32::from(n_txd) + 32)).max(8192);
 
         let mut tx_queue = vec![];
         let mut rx_queue = vec![];
@@ -93,6 +118,8 @@ impl EthDev {
     }
 
     /// Get socket id.
+    #[inline]
+    #[must_use]
     pub fn socket_id(&self) -> u32 {
         self.socket_id
     }
@@ -101,11 +128,12 @@ impl EthDev {
     ///
     /// The device start step is the last one and consists of setting the configured offload
     /// features and in starting the transmit and the receive units of the device. Device
-    /// RTE_ETH_DEV_NOLIVE_MAC_ADDR flag causes MAC address to be set before PMD port start
+    /// `RTE_ETH_DEV_NOLIVE_MAC_ADDR` flag causes MAC address to be set before PMD port start
     /// callback function is invoked.
     ///
     /// On success, all basic functions exported by the Ethernet API (link status, receive/
     /// transmit, and so on) can be invoked.
+    #[inline]
     pub fn start(&mut self) -> Result<()> {
         // XXX now we use one TxAgent and one RxAgent for each EthDev.
         // Make the mapping more flexible.
@@ -116,6 +144,7 @@ impl EthDev {
         let errno = unsafe { rte_eth_dev_start(self.port_id) };
         Error::from_ret(errno)?;
         // SAFETY: ffi
+        #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_set_ptypes(self.port_id, 0, ptr::null_mut(), 0) };
         Error::from_ret(errno)?;
         // Start tx agent
@@ -135,6 +164,7 @@ impl EthDev {
     }
 
     /// Stop an Ethernet device.
+    #[inline]
     pub fn stop(&mut self) -> Result<()> {
         let rx_agent = self.rx_agent.take().ok_or(Error::BrokenPipe)?;
         let tx_agent = self.tx_agent.take().ok_or(Error::BrokenPipe)?;
@@ -155,26 +185,26 @@ impl EthDev {
         Ok(())
     }
 
+    /// Get a `TxSender`.
     pub(crate) fn sender(&self, queue_id: u16) -> Option<TxSender> {
         let chan: mpsc::Sender<Mbuf> = self.tx_chan.get(queue_id as usize)?.clone()?;
-        let tx_queue: Arc<EthTxQueue> = self.tx_queue.get(queue_id as usize)?.clone();
-        Some(TxSender {
-            chan,
-            tx_queue: tx_queue.clone(),
-        })
+        let tx_queue: Arc<EthTxQueue> = Arc::clone(self.tx_queue.get(queue_id as usize)?);
+        Some(TxSender { chan, tx_queue })
     }
 
     /// Get MAC address.
+    #[inline]
     pub fn mac_addr(&self) -> Result<rte_ether_addr> {
         let mut ether_addr = MaybeUninit::<rte_ether_addr>::uninit();
         // SAFETY: ffi
         let errno = unsafe { rte_eth_macaddr_get(self.port_id, ether_addr.as_mut_ptr()) };
         Error::from_ret(errno)?;
-        // SAFETY: rte_ether_addr is successfully initialized due to no error code.
+        // SAFETY: `rte_ether_addr` is successfully initialized due to no error code.
         Ok(unsafe { ether_addr.assume_init() })
     }
 
     /// Enable receipt in promiscuous mode for an Ethernet device.
+    #[inline]
     pub fn enable_promiscuous(&self) -> Result<()> {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_promiscuous_enable(self.port_id) };
@@ -183,6 +213,7 @@ impl EthDev {
     }
 
     /// Disable receipt in promiscuous mode for an Ethernet device.
+    #[inline]
     pub fn disable_promiscuous(&self) -> Result<()> {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_promiscuous_disable(self.port_id) };
@@ -191,6 +222,8 @@ impl EthDev {
     }
 
     /// Return the value of promiscuous mode for an Ethernet device.
+    #[inline]
+    #[must_use]
     pub fn is_promiscuous(&self) -> bool {
         // SAFETY: ffi
         unsafe { rte_eth_promiscuous_get(self.port_id) == 1 }
@@ -198,6 +231,7 @@ impl EthDev {
 }
 
 impl Drop for EthDev {
+    #[inline]
     fn drop(&mut self) {
         // SAFETY: ffi
         #[allow(unsafe_code)]
@@ -208,7 +242,7 @@ impl Drop for EthDev {
     }
 }
 
-// SAFETY: EthDev can be globally accessed.
+// SAFETY: no thread-local data involved.
 #[allow(unsafe_code)]
 unsafe impl Send for EthDev {}
 
@@ -217,6 +251,7 @@ unsafe impl Send for EthDev {}
 unsafe impl Sync for EthDev {}
 
 impl Debug for EthDev {
+    #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EthDev")
             .field("port_id", &self.port_id)
@@ -229,8 +264,10 @@ impl Debug for EthDev {
 #[allow(missing_copy_implementations)]
 #[derive(Debug)]
 struct EthRxQueue {
+    /// The `queue_id` refered to this `EthTxQueue`.
     #[allow(dead_code)]
     queue_id: u16,
+    /// `Mempool` to allocate `Mbuf`s to hold the received frames.
     _mp: Mempool,
 }
 
@@ -238,22 +275,28 @@ struct EthRxQueue {
 #[allow(missing_copy_implementations)]
 #[derive(Debug)]
 struct EthTxQueue {
+    /// The `queue_id` refered to this `EthTxQueue`.
     #[allow(dead_code)]
     queue_id: u16,
+    /// `Mempool` to allocate `Mbuf`s to send.
     mp: Mempool,
 }
 
+/// A wrapper for channel to send Mbuf from socket to `EthTxQueue`.
 #[derive(Debug)]
 pub(crate) struct TxSender {
+    /// The sender held by socket.
     chan: mpsc::Sender<Mbuf>,
+    /// The `EthTxQueue` that this request is sent to.
     tx_queue: Arc<EthTxQueue>,
 }
 
 impl TxSender {
+    /// Send a request to `TxAgent`
     pub(crate) async fn send(&self, pkt: Packet) -> Result<()> {
         let m = pkt.into_mbuf(&self.tx_queue.mp)?;
-        let res = self.chan.send(m).await;
-        res.map_err(|_| Error::BrokenPipe)
+        #[allow(clippy::map_err_ignore)]
+        self.chan.send(m).await.map_err(|_| Error::BrokenPipe)
     }
 }
 

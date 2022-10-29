@@ -5,7 +5,7 @@ use crate::{
     mbuf::Mbuf,
     net_dev,
     packet::Packet,
-    protocol::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP},
+    proto::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP},
     socket::{self, addr_2_sockfd, Mailbox, IPID},
     Error, Result,
 };
@@ -15,18 +15,25 @@ use dpdk_sys::{
 };
 use std::{
     fmt::Debug,
+    mem,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     sync::{atomic::Ordering, Arc, Mutex},
 };
 
 /// A UDP socket.
-#[allow(missing_copy_implementations)]
+#[allow(missing_copy_implementations, clippy::module_name_repetitions)]
 pub struct UdpSocket {
+    /// Socket fd.
     sockfd: i32,
+    /// The IP address that this socket is bound to.
     ip: u32,
+    /// The port that this socket is bound to.
     port: u16,
+    /// A channel to `TxAgent`.
     tx: TxSender,
+    /// A pointer to its mailbox.
     mailbox: Arc<Mutex<Mailbox>>,
+    /// ether_addr for the device. TODO remove it
     eth_addr: rte_ether_addr,
 }
 
@@ -35,13 +42,20 @@ unsafe impl Send for UdpSocket {}
 
 impl UdpSocket {
     /// Creates a UDP socket from the given address.
+    #[inline]
     pub fn bind<A: ToSocketAddrs>(addr: A) -> Result<Self> {
-        while let Some(addr) = addr.to_socket_addrs().unwrap().next() {
+        #[allow(clippy::map_err_ignore)]
+        while let Some(addr) = addr
+            .to_socket_addrs()
+            .map_err(|_| Error::InvalidArg)?
+            .next()
+        {
             if let Ok((sockfd, port)) = socket::bind_fd(addr) {
                 if let Ok((tx, eth_addr)) = net_dev::find_dev_by_ip(addr.ip()) {
                     let mailbox = socket::alloc_mailbox(sockfd);
                     let ip = match addr.ip() {
                         IpAddr::V4(addr) => u32::from_ne_bytes(addr.octets()),
+                        #[allow(clippy::todo)]
                         IpAddr::V6(_) => todo!(),
                     };
                     return Ok(UdpSocket {
@@ -53,7 +67,7 @@ impl UdpSocket {
                         eth_addr,
                     });
                 }
-                socket::free_fd(sockfd).unwrap();
+                socket::free_fd(sockfd)?;
                 return Err(Error::InvalidArg);
             }
         }
@@ -62,15 +76,20 @@ impl UdpSocket {
 
     /// Receives a single datagram message on the socket. On success, returns
     /// the number of bytes read and the origin.
+    #[inline]
     pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        #[allow(clippy::unwrap_used)]
         let rx = self.mailbox.lock().unwrap().recv();
+        #[allow(clippy::unwrap_used)]
         let (addr, data) = rx.await.unwrap();
         let mut len = 0;
         let mut buf = buf;
-        for frag in data.frags.into_iter() {
+        for frag in data.frags {
             let mut frag = frag.freeze();
             let sz = frag.remaining().min(buf.len());
+            #[allow(clippy::indexing_slicing)]
             frag.copy_to_slice(&mut buf[..sz]);
+            #[allow(clippy::indexing_slicing)]
             buf = &mut buf[sz..];
             len += sz;
             if buf.is_empty() {
@@ -82,13 +101,16 @@ impl UdpSocket {
 
     /// Sends data on the socket to the given address. On success, returns the
     /// number of bytes written.
+    #[inline]
     #[allow(unsafe_code)]
     pub async fn send_to<A: ToSocketAddrs>(&self, buf: &[u8], addr: A) -> Result<usize> {
+        #[allow(clippy::map_err_ignore)]
         let addr = addr
             .to_socket_addrs()
             .map_err(|_| Error::InvalidArg)?
             .next()
             .ok_or(Error::InvalidArg)?;
+
         let len = buf.len();
         let l2_sz = ETHER_HDR_LEN;
         let l3_sz = L3Protocol::Ipv4.length();
@@ -100,18 +122,22 @@ impl UdpSocket {
         // fill header
         {
             // fill l2 header
+            // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
+            #[allow(clippy::cast_ptr_alignment)]
             let ether_hdr =
-                unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr() as *mut rte_ether_hdr) };
+                unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_ether_hdr>()) };
             ether_hdr.src_addr = self.eth_addr;
             // TODO send to real mac addr. implement ARP in the future!
             ether_hdr.dst_addr.addr_bytes.copy_from_slice(&[0xff; 6]);
             ether_hdr.ether_type = (RTE_ETHER_TYPE_IPV4 as u16).to_be();
+            // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             unsafe {
                 hdr.advance_mut(l2_sz);
             }
 
             // fill l3 header
-            let ip_hdr = unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr() as *mut rte_ipv4_hdr) };
+            // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
+            let ip_hdr = unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_ipv4_hdr>()) };
             ip_hdr.version_ihl_union.version_ihl = 0x45; // version = 4, ihl = 5
             ip_hdr.type_of_service = 0;
             ip_hdr.total_length = ((buf.len() + l4_sz + l3_sz) as u16).to_be();
@@ -121,20 +147,24 @@ impl UdpSocket {
             ip_hdr.next_proto_id = IP_NEXT_PROTO_UDP;
             ip_hdr.dst_addr = match addr.ip() {
                 IpAddr::V4(addr) => u32::from_ne_bytes(addr.octets()),
+                #[allow(clippy::unimplemented)]
                 IpAddr::V6(_) => unimplemented!(),
             };
             ip_hdr.src_addr = self.ip;
             // SAFETY: ffi
             ip_hdr.hdr_checksum = unsafe { rte_ipv4_cksum(ip_hdr).to_be() };
+            // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             unsafe {
                 hdr.advance_mut(l3_sz);
             }
 
-            let udp_hdr = unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr() as *mut rte_udp_hdr) };
+            // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
+            let udp_hdr = unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_udp_hdr>()) };
             udp_hdr.src_port = self.port;
             udp_hdr.dst_port = addr.port();
             udp_hdr.dgram_len = ((buf.len() + l4_sz) as u16).to_be();
             udp_hdr.dgram_cksum = 0;
+            // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             unsafe {
                 hdr.advance_mut(l4_sz);
             }
@@ -148,6 +178,7 @@ impl UdpSocket {
 }
 
 impl Debug for UdpSocket {
+    #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("UdpSocket")
             .field("sockfd", &self.sockfd)
@@ -159,42 +190,47 @@ impl Debug for UdpSocket {
 }
 
 impl Drop for UdpSocket {
+    #[inline]
     fn drop(&mut self) {
         socket::dealloc_mailbox(self.sockfd);
+        #[allow(clippy::unwrap_used)]
         socket::free_fd(self.sockfd).unwrap();
     }
 }
 
+/// Handle IPv4 packet.
 #[allow(unsafe_code)]
 pub(crate) fn handle_ipv4_udp(mut m: Mbuf) {
     // Parse IPv4 and UDP header.
     let data = m.data_slice();
 
-    let ip_hdr = unsafe { &*(data.as_ptr() as *const rte_ipv4_hdr) };
+    // SAFETY: remain size larger than `rte_ipv4_hdr`, which is checked in `handle_ether`
+    let ip_hdr = unsafe { &*(data.as_ptr().cast::<rte_ipv4_hdr>()) };
     let dst_ip_bytes: [u8; 4] = ip_hdr.dst_addr.to_ne_bytes();
     let dst_ip = IpAddr::from(dst_ip_bytes);
     let src_ip_bytes: [u8; 4] = ip_hdr.src_addr.to_ne_bytes();
     let src_ip = IpAddr::from(src_ip_bytes);
 
+    if data.len() < mem::size_of::<rte_ipv4_hdr>() + mem::size_of::<rte_udp_hdr>() {
+        return;
+    }
+
+    // SAFETY: remain size larger than `rte_udp_hdr` size
     #[allow(trivial_casts)]
-    let udp_hdr = unsafe { &*((ip_hdr as *const rte_ipv4_hdr).add(1) as *const rte_udp_hdr) };
+    let udp_hdr = unsafe { &*((ip_hdr as *const rte_ipv4_hdr).add(1).cast::<rte_udp_hdr>()) };
     let dst_port = udp_hdr.dst_port;
     let src_port = udp_hdr.src_port;
     let _len = udp_hdr.dgram_len.to_be();
     let src_addr = SocketAddr::new(src_ip, src_port);
 
     let hdr_len = L3Protocol::Ipv4.length() + L4Protocol::UDP.length();
+    #[allow(clippy::unwrap_used)]
     m.adj(hdr_len).unwrap();
-    let packet = Packet::from_mbuf(m).unwrap();
+    let packet = Packet::from_mbuf(m);
 
     if let Some(sockfd) = addr_2_sockfd(dst_port, dst_ip) {
         socket::put_mailbox(sockfd, src_addr, packet);
     } else {
         eprintln!("sockfd not found: {dst_ip:?}:{dst_port}");
     }
-}
-
-#[allow(unsafe_code)]
-pub(crate) fn handle_ipv6_udp(_m: Mbuf) {
-    todo!()
 }

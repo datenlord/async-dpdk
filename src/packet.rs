@@ -3,28 +3,26 @@
 use crate::{
     mbuf::Mbuf,
     mempool::Mempool,
-    protocol::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, PTYPE_L2_ETHER},
+    proto::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, PTYPE_L2_ETHER},
     Result,
 };
 use bytes::{BufMut, BytesMut};
 use dpdk_sys::{RTE_PTYPE_L3_MASK, RTE_PTYPE_L4_MASK};
 
-#[allow(unused_macros)]
-macro_rules! is_bad_iova {
-    ($virt:expr) => {
-        // #[allow(unsafe_code)]
-        unsafe { dpdk_sys::rte_mem_virt2iova($virt.cast()) == u64::MAX }
-    };
-}
-
+/// Mask for L3 protocol id in `rte_mbuf`.
 const L3_MASK: u32 = RTE_PTYPE_L3_MASK;
+
+/// Mask for L4 protocol id in `rte_mbuf`.
 const L4_MASK: u32 = RTE_PTYPE_L4_MASK;
 
 /// Generic Packet.
 #[derive(Debug)]
-pub struct Packet {
+pub(crate) struct Packet {
+    /// L3 protocol.
     pub(crate) l3protocol: L3Protocol,
+    /// L4 protocol.
     pub(crate) l4protocol: L4Protocol,
+    /// Fragments of slices.
     pub(crate) frags: Vec<BytesMut>,
 }
 
@@ -44,10 +42,13 @@ impl Packet {
         self.frags.push(frag);
     }
 
-    pub(crate) fn from_mbuf(m: Mbuf) -> Result<Self> {
+    /// Mbuf -> Packet
+    pub(crate) fn from_mbuf(m: Mbuf) -> Self {
         // XXX protocol information in rte_mbuf may be incorrect
         let (l3protocol, l4protocol): (L3Protocol, L4Protocol) = {
+            // SAFETY: mbuf pointer checked upon its allocation
             let m = unsafe { &*m.as_ptr() };
+            // SAFETY: access union type
             let pkt_type = unsafe { m.packet_type_union.packet_type };
             ((pkt_type & L3_MASK).into(), (pkt_type & L4_MASK).into())
         };
@@ -58,21 +59,23 @@ impl Packet {
         frags.push(data.into()); // TODO zero-copy
 
         while let Some(c) = cur.next() {
+            #[allow(clippy::shadow_unrelated)] // related actually
             let data = c.data_slice();
             frags.push(data.into()); // TODO zero-copy
             cur = c;
         }
-        Ok(Packet {
+        Packet {
             l3protocol,
             l4protocol,
             frags,
-        })
+        }
     }
 
+    /// Packet -> Mbuf
     pub(crate) fn into_mbuf(mut self, mp: &Mempool) -> Result<Mbuf> {
-        let mut tail = Mbuf::new(&mp)?;
+        let mut tail = Mbuf::new(mp)?;
         let mut head: Option<Mbuf> = None;
-        for frag in self.frags.iter_mut() {
+        for frag in &mut self.frags {
             let mut len = frag.len();
             while len > tail.tailroom() {
                 if tail.tailroom() == 0 {
@@ -81,12 +84,13 @@ impl Packet {
                     } else {
                         head = Some(tail);
                     }
-                    tail = Mbuf::new(&mp)?;
+                    tail = Mbuf::new(mp)?;
                 }
                 let delta = tail.tailroom();
                 let data = tail.append(delta)?;
                 data.copy_from_slice(&frag[..delta]); // TODO: zero-copy
                 len -= delta;
+                // SAFETY: delta > frag's remain size
                 unsafe {
                     frag.advance_mut(delta);
                 }
@@ -95,6 +99,7 @@ impl Packet {
             data.copy_from_slice(frag); // TODO: zero-copy
         }
         let mbuf = head.unwrap_or(tail);
+        // SAFETY: mbuf pointer checked upon its allocation
         let m = unsafe { &mut *(mbuf.as_ptr()) };
         m.packet_type_union.packet_type =
             PTYPE_L2_ETHER | self.l3protocol as u32 | self.l4protocol as u32;

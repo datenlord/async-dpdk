@@ -1,7 +1,12 @@
 //! mempool wrapper
 
 use crate::{Error, Result};
-use dpdk_sys::*;
+use dpdk_sys::{
+    rte_mempool, rte_mempool_avail_count, rte_mempool_create, rte_mempool_free, rte_mempool_get,
+    rte_mempool_get_bulk, rte_mempool_in_use_count, rte_mempool_lookup, rte_mempool_put_bulk,
+    RTE_MEMPOOL_F_NO_CACHE_ALIGN, RTE_MEMPOOL_F_NO_IOVA_CONTIG, RTE_MEMPOOL_F_NO_SPREAD,
+    RTE_MEMPOOL_F_SC_GET, RTE_MEMPOOL_F_SP_PUT,
+};
 use lazy_static::lazy_static;
 use std::collections::HashMap;
 use std::ffi::CString;
@@ -13,7 +18,7 @@ use std::sync::Mutex;
 use std::sync::{Arc, Weak};
 
 lazy_static! {
-    pub(crate) static ref MEMPOOLS: Mutex<HashMap<usize, Weak<MempoolInner>>> = Default::default();
+    pub(crate) static ref MEMPOOLS: Mutex<HashMap<usize, Weak<MempoolInner>>> = Mutex::default();
 }
 
 /// Mempool flag. By default, objects addresses are spread between channels in RAM: the pool
@@ -22,14 +27,14 @@ lazy_static! {
 pub const MEMPOOL_NO_SPREAD: u32 = RTE_MEMPOOL_F_NO_SPREAD;
 
 /// By default, the returned objects are cache-aligned. This flag removes this constraint,
-/// and no padding will be present between objects. This flag implies RTE_MEMPOOL_F_NO_SPREAD.
+/// and no padding will be present between objects. This flag implies `RTE_MEMPOOL_F_NO_SPREAD`.
 pub const MEMPOOL_NO_CACHE_ALIGN: u32 = RTE_MEMPOOL_F_NO_CACHE_ALIGN;
 
-/// If this flag is set, the default behavior when using rte_mempool_put() or rte_mempool_put_bulk()
+/// If this flag is set, the default behavior when using `rte_mempool_put`() or `rte_mempool_put_bulk`()
 /// is "single-producer". Otherwise, it is "multi-producers".
 pub const MEMPOOL_SINGLE_PRODUCER: u32 = RTE_MEMPOOL_F_SP_PUT;
 
-/// If this flag is set, the default behavior when using rte_mempool_get() or rte_mempool_get_bulk()
+/// If this flag is set, the default behavior when using `rte_mempool_get`() or `rte_mempool_get_bulk`()
 /// is "single-consumer". Otherwise, it is "multi-consumers".
 pub const MEMPOOL_SINGLE_CONSUMER: u32 = RTE_MEMPOOL_F_SC_GET;
 
@@ -41,11 +46,14 @@ pub const MEMPOOL_NO_IOVA_CONTIG: u32 = RTE_MEMPOOL_F_NO_IOVA_CONTIG;
 /// per-core object cache and an alignment helper.
 #[derive(Debug)]
 pub struct Mempool {
+    /// An `Arc` pointer to `MempoolInner`.
     inner: Arc<MempoolInner>,
 }
 
 impl Mempool {
     /// Create a new Mempool named `name` in memory.
+    #[inline]
+    #[allow(clippy::unwrap_in_result)]
     pub fn create(
         name: &str,
         n: u32,
@@ -55,9 +63,10 @@ impl Mempool {
         socket_id: i32,
         flags: u32,
     ) -> Result<Self> {
+        #[allow(clippy::unwrap_used)]
         let name = CString::new(name).unwrap();
         let inner = MempoolInner::create(
-            name,
+            &name,
             n,
             elt_size,
             cache_size,
@@ -69,65 +78,83 @@ impl Mempool {
     }
 
     /// Search a mempool from its name.
+    #[inline]
+    #[allow(clippy::unwrap_in_result)]
     pub fn lookup(name: &str) -> Result<Self> {
+        #[allow(clippy::unwrap_used)]
         let name = CString::new(name).unwrap();
-        let inner = MempoolInner::lookup(name)?;
+        let inner = MempoolInner::lookup(&name)?;
         Ok(Self { inner })
     }
 
     /// Get one object from the mempool.
+    #[inline]
     pub fn get<T: MempoolObj>(&self) -> Result<T> {
         self.inner.get::<T>()
     }
 
     /// Put one object back in the mempool.
+    #[inline]
     pub fn put(&self, obj: impl MempoolObj) {
-        self.inner.put(obj)
+        self.inner.put(obj);
     }
 
     /// Get several objects from the mempool.
+    #[inline]
     pub fn get_bulk<T: MempoolObj>(&self, n: u32) -> Result<Vec<T>> {
         self.inner.get_bulk(n)
     }
 
     /// Put several objects back in the mempool.
-    pub fn put_bulk(&self, objs: Vec<impl MempoolObj>, n: u32) {
+    #[inline]
+    pub fn put_bulk(&self, objs: &[impl MempoolObj], n: u32) {
         self.inner.put_bulk(objs, n);
     }
 
     /// Return the number of entries in the mempool. When cache is enabled, this function has to browse
     /// the length of all lcores, so it should not be used in a data path, but only for debug purposes.
     /// User-owned mempool caches are not accounted for.
+    #[must_use]
+    #[inline]
     pub fn available(&self) -> u32 {
         self.inner.avail_count()
     }
 
     /// Return the number of elements which have been allocated from the mempool.
+    #[must_use]
+    #[inline]
     pub fn in_use(&self) -> u32 {
         self.inner.in_use_count()
     }
     /// Test if the mempool is empty.
+    #[must_use]
+    #[inline]
     pub fn is_empty(&self) -> bool {
         self.inner.empty()
     }
 
     /// Test if the mempool is full.
+    #[must_use]
+    #[inline]
     pub fn is_full(&self) -> bool {
         self.inner.full()
     }
 
+    /// Get a pointer to `rte_mempool`.
     pub(crate) fn as_ptr(&self) -> *mut rte_mempool {
         self.inner.as_ptr()
     }
 
+    /// Get a new instance of `Mempool`.
     pub(crate) fn new(inner: Arc<MempoolInner>) -> Self {
         Self { inner }
     }
 }
 
-/// Mempool
+/// Mempool, an allocator in DPDK.
 #[derive(Clone)]
 pub(crate) struct MempoolInner {
+    /// A pointer to `rte_mempool`.
     mp: NonNull<rte_mempool>,
 }
 
@@ -147,30 +174,33 @@ impl Debug for MempoolInner {
 
 impl Drop for MempoolInner {
     fn drop(&mut self) {
+        // SAFETY: ffi
         #[allow(unsafe_code)]
         unsafe {
-            // SAFETY: ffi
             rte_mempool_free(self.mp.as_ptr());
         }
     }
 }
 
-#[allow(unsafe_code)]
+/// Wrapper for `rte_mempool`.
+#[allow(unsafe_code, clippy::unwrap_in_result)]
 impl MempoolInner {
+    /// Create a new `Mempool` with a pointer.
     pub(crate) fn new(ptr: *mut rte_mempool) -> Result<Arc<Self>> {
-        let mp = NonNull::new(ptr).map_or(Err(Error::NoMem), |mp| Ok(mp))?;
+        let mp = NonNull::new(ptr).ok_or(Error::NoMem)?;
         let mp = Arc::new(Self { mp });
-        assert!(MEMPOOLS
+        #[allow(clippy::unwrap_used)]
+        let _prev = MEMPOOLS
             .lock()
             .unwrap()
-            .insert(ptr as usize, Arc::downgrade(&mp))
-            .is_none());
+            .insert(ptr as usize, Arc::downgrade(&mp));
         Ok(mp)
     }
 
-    #[inline(always)]
+    /// Create a new `Mempool`.
+    #[inline]
     fn create(
-        name: CString,
+        name: &CString,
         n: u32,
         elt_size: u32,
         cache_size: u32,
@@ -197,31 +227,34 @@ impl MempoolInner {
         Self::new(ptr)
     }
 
-    #[inline(always)]
-    fn lookup(name: CString) -> Result<Arc<Self>> {
+    /// Lookup a `Mempool` with its name.
+    #[inline]
+    #[allow(clippy::unwrap_in_result)]
+    fn lookup(name: &CString) -> Result<Arc<Self>> {
         // SAFETY: ffi
         let ptr = unsafe { rte_mempool_lookup(name.as_ptr()) };
         if ptr.is_null() {
             return Err(Error::from_errno());
         }
+        #[allow(clippy::unwrap_used)]
         MEMPOOLS
             .lock()
             .unwrap()
             .get(&(ptr as usize))
             .map(|weak| weak.upgrade().unwrap())
-            .map_or(Err(Error::Unknown), |mp| Ok(mp))
+            .ok_or(Error::Unknown)
     }
 
     /// Put an object to the mempool.
-    #[inline(always)]
+    #[inline]
     fn put(&self, obj: impl MempoolObj) {
-        self.put_bulk(vec![obj], 1);
+        self.put_bulk(&[obj], 1);
     }
 
     /// Put several objects back to the mempool.
-    #[inline(always)]
-    fn put_bulk(&self, objs: Vec<impl MempoolObj>, n: u32) {
-        let mut obj_table = objs.iter().map(|obj| obj.as_c_void()).collect::<Vec<_>>();
+    #[inline]
+    fn put_bulk(&self, objs: &[impl MempoolObj], n: u32) {
+        let mut obj_table = objs.iter().map(MempoolObj::as_c_void).collect::<Vec<_>>();
         // SAFETY: ffi
         #[allow(unsafe_code)]
         unsafe {
@@ -230,65 +263,72 @@ impl MempoolInner {
     }
 
     /// Get an object from the mempool.
-    #[inline(always)]
+    #[inline]
     fn get<T: MempoolObj>(&self) -> Result<T> {
         let mut obj = MaybeUninit::<T>::uninit();
         // SAFETY: ffi
         let errno =
-            unsafe { rte_mempool_get(self.mp.as_ptr(), obj.as_mut_ptr() as *mut *mut c_void) };
+            unsafe { rte_mempool_get(self.mp.as_ptr(), obj.as_mut_ptr().cast::<*mut c_void>()) };
         Error::from_ret(errno)?;
-        // SAFETY: objs are initialized
+        // SAFETY: objs are initialized since no error reported
         unsafe { Ok(obj.assume_init()) }
     }
 
-    #[inline(always)]
+    /// Get a bulk of objects.
+    #[inline]
     fn get_bulk<T: MempoolObj>(&self, n: u32) -> Result<Vec<T>> {
         let mut objs = (0..n)
             .map(|_| MaybeUninit::<T>::uninit())
             .collect::<Vec<_>>();
         let mut obj_table = objs
             .iter_mut()
-            .map(|obj| obj.as_mut_ptr() as *mut c_void)
+            .map(|obj| obj.as_mut_ptr().cast::<c_void>())
             .collect::<Vec<_>>();
         // SAFETY: ffi
         let errno = unsafe { rte_mempool_get_bulk(self.mp.as_ptr(), obj_table.as_mut_ptr(), n) };
         Error::from_ret(errno)?;
-        // SAFETY: objs are initialized
+        // SAFETY: objs are initialized in `rte_mempool_get_bulk`
         Ok(objs
             .into_iter()
             .map(|obj| unsafe { obj.assume_init() })
             .collect())
     }
 
-    #[inline(always)]
+    /// The number of available objects.
+    #[inline]
     fn avail_count(&self) -> u32 {
         // SAFETY: ffi
         unsafe { rte_mempool_avail_count(self.mp.as_ptr()) }
     }
 
-    #[inline(always)]
+    /// The number of objects that are in-use.
+    #[inline]
     fn in_use_count(&self) -> u32 {
         // SAFETY: ffi
         unsafe { rte_mempool_in_use_count(self.mp.as_ptr()) }
     }
 
-    #[inline(always)]
+    /// The `Mempool` is empty or not.
+    #[inline]
     fn empty(&self) -> bool {
         self.avail_count() == 0
     }
 
-    #[inline(always)]
+    /// The `Mempool` is full or not.
+    #[inline]
     fn full(&self) -> bool {
         // SAFETY: the *rte_mempool pointer is valid
         unsafe { self.avail_count() == self.mp.as_ref().size }
     }
 
+    /// Get inner pointer to `rte_mempool`.
     fn as_ptr(&self) -> *mut rte_mempool {
         self.mp.as_ptr()
     }
 }
 
 /// Mempool elements
+#[allow(clippy::module_name_repetitions)]
 pub trait MempoolObj: Sized {
     /// Transform objects into C pointers.
     fn as_c_void(&self) -> *mut c_void;
