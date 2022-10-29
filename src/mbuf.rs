@@ -301,7 +301,7 @@ mod test {
 
     #[test]
     fn test() {
-        eal::Builder::new().iova_mode(IovaMode::VA).enter().unwrap();
+        let _ = eal::Config::new().iova_mode(IovaMode::VA).enter();
 
         // Create a packet mempool.
         let mp = Mbuf::create_mp("test", 10, 0, lcore::socket_id()).unwrap();

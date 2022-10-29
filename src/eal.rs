@@ -1,9 +1,12 @@
 //! EAL (Environment Abstract Layer)
 
+use crate::net_dev;
 use crate::{Error, Result};
 use dpdk_sys::*;
 use lazy_static::lazy_static;
 use std::ffi::CString;
+use std::net::IpAddr;
+use std::str::FromStr;
 use std::sync::{Arc, RwLock};
 use std::{os::raw::c_char, path::PathBuf};
 
@@ -74,6 +77,8 @@ pub fn runtime_dir() -> PathBuf {
 
 impl Drop for Eal {
     fn drop(&mut self) {
+        // Close all devices
+        net_dev::device_close().unwrap();
         // SAFETY: ffi
         #[allow(unsafe_code)]
         let errno = unsafe { rte_eal_cleanup() };
@@ -83,8 +88,9 @@ impl Drop for Eal {
 
 /// EAL Builder
 #[derive(Debug, Default)]
-pub struct Builder {
+pub struct Config {
     args: Vec<CString>,
+    addrs: Vec<IpAddr>,
 }
 
 /// IOVA mode.
@@ -118,13 +124,22 @@ pub enum LogLevel {
     Debug = 8,
 }
 
-impl Builder {
+impl Config {
     /// Create a new eal builder.
     pub fn new() -> Self {
         let env_args = std::env::args().collect::<Vec<_>>();
         Self {
             args: vec![CString::new(env_args[0].as_str()).unwrap()],
+            addrs: vec![],
         }
+    }
+
+    /// Probe devices or not.
+    pub fn device_probe(mut self, addr_str: &[&str]) -> Self {
+        for addr in addr_str.iter() {
+            self.addrs.push(IpAddr::from_str(addr).unwrap());
+        }
+        self
     }
 
     /// Set core mask to EAL.
@@ -240,6 +255,9 @@ impl Builder {
     /// is to be executed on the MAIN lcore only, as soon as possible in the application's main()
     /// function. It puts the WORKER lcores in the WAIT state.
     pub fn enter(self) -> Result<()> {
+        if CONTEXT.read().unwrap().is_some() {
+            return Err(Error::Already);
+        }
         let mut pargs = self
             .args
             .iter()
@@ -253,6 +271,7 @@ impl Builder {
         }
         let context = Arc::new(Eal {});
         *CONTEXT.write().unwrap() = Some(context.clone());
+        net_dev::device_probe(self.addrs)?;
         Ok(())
     }
 }

@@ -25,10 +25,13 @@ async fn server() {
 
 #[tokio::main]
 async fn main() {
-    eal::Builder::new().enter().unwrap();
-    net_dev::device_probe(&["10.2.3.0", "10.2.3.1"]).unwrap();
+    eal::Config::new()
+        .device_probe(&["10.2.3.0", "10.2.3.1"])
+        .enter()
+        .unwrap();
+    net_dev::device_start().unwrap();
     let srv = tokio::task::spawn(server());
     client().await;
     srv.await.unwrap();
-    net_dev::device_close().unwrap();
+    net_dev::device_stop().unwrap();
 }

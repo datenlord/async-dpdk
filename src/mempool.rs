@@ -13,7 +13,7 @@ use std::sync::Mutex;
 use std::sync::{Arc, Weak};
 
 lazy_static! {
-    static ref MEMPOOLS: Mutex<HashMap<usize, Weak<MempoolInner>>> = Default::default();
+    pub(crate) static ref MEMPOOLS: Mutex<HashMap<usize, Weak<MempoolInner>>> = Default::default();
 }
 
 /// Mempool flag. By default, objects addresses are spread between channels in RAM: the pool
@@ -304,8 +304,7 @@ mod test {
 
     #[test]
     fn test() {
-        eal::Builder::new().iova_mode(IovaMode::VA).enter().unwrap();
-
+        let _ = eal::Config::new().iova_mode(IovaMode::VA).enter();
         let mp = Mempool::create(
             "mempool",
             64,

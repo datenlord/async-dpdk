@@ -15,8 +15,8 @@ use tokio::sync::mpsc;
 pub struct EthDev {
     port_id: u16,
     socket_id: u32,
-    tx_agent: Arc<TxAgent>,
-    rx_agent: Arc<RxAgent>,
+    tx_agent: Option<Arc<TxAgent>>,
+    rx_agent: Option<Arc<RxAgent>>,
     tx_queue: Vec<Arc<EthTxQueue>>,
     rx_queue: Vec<Arc<EthRxQueue>>,
     tx_chan: Vec<Option<mpsc::Sender<Mbuf>>>,
@@ -62,11 +62,6 @@ impl EthDev {
         }
         let socket_id = socket_id as u32;
 
-        // XXX now we use one TxAgent and one RxAgent for each EthDev.
-        // Make the mapping more flexible.
-        let rx_agent = RxAgent::start(socket_id);
-        let tx_agent = TxAgent::start();
-
         let nb_ports = EthDev::available_ports();
         let n_elem = (nb_ports * (n_rxd as u32 + n_txd as u32 + 32)).max(8192);
 
@@ -89,8 +84,8 @@ impl EthDev {
         Ok(Self {
             port_id,
             socket_id,
-            tx_agent,
-            rx_agent,
+            tx_agent: None,
+            rx_agent: None,
             tx_queue,
             rx_queue,
             tx_chan,
@@ -100,19 +95,6 @@ impl EthDev {
     /// Get socket id.
     pub fn socket_id(&self) -> u32 {
         self.socket_id
-    }
-
-    /// Stop tx queue and rx queue.
-    fn stop_queue(&self) -> Result<()> {
-        self.tx_queue
-            .iter()
-            .enumerate()
-            .for_each(|(queue_id, _)| self.tx_agent.unregister(self.port_id, queue_id as _));
-        self.rx_queue
-            .iter()
-            .enumerate()
-            .for_each(|(queue_id, _)| self.rx_agent.unregister(self.port_id, queue_id as _));
-        Ok(())
     }
 
     /// Start an Ethernet device.
@@ -125,6 +107,11 @@ impl EthDev {
     /// On success, all basic functions exported by the Ethernet API (link status, receive/
     /// transmit, and so on) can be invoked.
     pub fn start(&mut self) -> Result<()> {
+        // XXX now we use one TxAgent and one RxAgent for each EthDev.
+        // Make the mapping more flexible.
+        let rx_agent = RxAgent::start(self.socket_id);
+        let tx_agent = TxAgent::start();
+
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_start(self.port_id) };
         Error::from_ret(errno)?;
@@ -133,19 +120,35 @@ impl EthDev {
         Error::from_ret(errno)?;
         // Start tx agent
         for (queue_id, chan) in self.tx_chan.iter_mut().enumerate() {
-            *chan = Some(self.tx_agent.register(self.port_id, queue_id as _));
+            *chan = Some(tx_agent.register(self.port_id, queue_id as _));
         }
         // Start rx agent
         self.rx_queue
             .iter()
             .enumerate()
-            .for_each(|(queue_id, _)| self.rx_agent.register(self.port_id, queue_id as _));
+            .for_each(|(queue_id, _)| rx_agent.register(self.port_id, queue_id as _));
+
+        self.rx_agent = Some(rx_agent);
+        self.tx_agent = Some(tx_agent);
+
         Ok(())
     }
 
     /// Stop an Ethernet device.
     pub fn stop(&mut self) -> Result<()> {
-        self.stop_queue()?;
+        let rx_agent = self.rx_agent.take().ok_or(Error::BrokenPipe)?;
+        let tx_agent = self.tx_agent.take().ok_or(Error::BrokenPipe)?;
+
+        self.tx_queue
+            .iter()
+            .enumerate()
+            .for_each(|(queue_id, _)| tx_agent.unregister(self.port_id, queue_id as _));
+        self.rx_queue
+            .iter()
+            .enumerate()
+            .for_each(|(queue_id, _)| rx_agent.unregister(self.port_id, queue_id as _));
+
+        rx_agent.stop();
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_stop(self.port_id) };
         Error::from_ret(errno)?;
@@ -196,7 +199,6 @@ impl EthDev {
 
 impl Drop for EthDev {
     fn drop(&mut self) {
-        self.rx_agent.stop();
         // SAFETY: ffi
         #[allow(unsafe_code)]
         let errno = unsafe { rte_eth_dev_close(self.port_id) };
