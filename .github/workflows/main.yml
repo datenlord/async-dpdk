@@ -1,0 +1,92 @@
+name: CI
+
+on: [push, pull_request]
+
+env:
+  CI_RUST_TOOLCHAIN: nightly-2022-07-01
+  DPDK_VERSION: dpdk-stable-21.11.1
+
+jobs:
+  fmt:
+    name: Code style check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          components: rustfmt
+      - name: Check code format
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+  clippy:
+    name: Clippy check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+          components: clippy
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install python3-pip libnuma-dev python3-pyelftools
+          sudo pip3 install meson ninja
+      - name: Cache DPDK executable
+        id: cache-dpdk
+        uses: actions/cache@v2
+        with:
+          path: |
+            /usr/local/lib/x86_64-linux-gnu/
+            /usr/local/include/
+          key: ${{ runner.os }}-dpdk-${{ env.DPDK_VERSION }}
+      - name: Install DPDK
+        if: steps.cache-dpdk.outputs.cache-hit != 'true'
+        run: sudo sh scripts/install.sh
+      - name: Clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+  
+  # test:
+  #   name: Run tests
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v2
+  #     - uses: actions-rs/toolchain@v1
+  #       with:
+  #         profile: minimal
+  #         toolchain: ${{ env.CI_RUST_TOOLCHAIN }}
+  #     - name: Install dependencies
+  #       run: |
+  #         sudo apt update
+  #         sudo apt install libnuma-dev
+  #     - name: Cache the Cargo dependencies
+  #       uses: actions/cache@v2
+  #       with:
+  #         path: |
+  #           ~/.cargo/bin/
+  #           ~/.cargo/registry/index/
+  #           ~/.cargo/registry/cache/
+  #           ~/.cargo/git/db/
+  #         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+  #     - name: Environment setup
+  #       run: sudo bash scripts/setup.sh setup
+  #     - name: Test
+  #       uses: actions-rs/cargo@v1
+  #       with:
+  #         command: test
+  #         args: -- --test-threads=1
+  #     - name: Setup tmate session on failure
+  #       if: ${{ failure() }}
+  #       uses: mxschmitt/action-tmate@v3
+  #     - name: Environment teardown
+  #       if: ${{ always() }}
+  #       run: sudo bash scripts/setup.sh teardown
+

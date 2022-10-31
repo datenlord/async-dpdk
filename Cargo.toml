@@ -1,0 +1,22 @@
+[package]
+name = "async-dpdk"
+version = "0.0.1"
+edition = "2021"
+license-file = "LICENSE"
+description = "A Rust async wrapper for DPDK"
+keywords = ["async", "dpdk"]
+categories = ["asynchronous", "dpdk", "network-programming"]
+repository = "https://github.com/datenlord/async-dpdk"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+bytes = "1.2.1"
+dpdk-sys = { git = "https://github.com/datenlord/dpdk-sys", rev = "febf1cc" }
+lazy_static = "1.4"
+libc = "0.2"
+thiserror = "1.0"
+tokio = { version = "1.20", features = ["full"] }
+
+# [patch.'https://github.com/datenlord/dpdk-sys']
+# dpdk-sys = { path = "../dpdk-sys" }
