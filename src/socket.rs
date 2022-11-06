@@ -139,8 +139,8 @@ pub(crate) fn bind_fd(addr: SocketAddr) -> Result<(i32, u16)> {
     let mut inner = SOCK_TABLE.inner.lock().unwrap();
     let fd = inner.free_fd.pop_front().ok_or(Error::NoBuf)?;
     let port = bind_port(addr.port(), addr.ip(), fd)?;
-    #[allow(clippy::cast_sign_loss, clippy::indexing_slicing)] // according to libc
-    inner.open[fd as usize] = SockState::InUse { port };
+    #[allow(clippy::cast_sign_loss)] // according to libc
+    *inner.open.get_mut(fd as usize).ok_or(Error::OutOfRange)? = SockState::InUse { port };
     Ok((fd, port))
 }
 
@@ -151,14 +151,14 @@ pub(crate) fn free_fd(fd: i32) -> Result<()> {
     }
     #[allow(clippy::unwrap_used)]
     let mut inner = SOCK_TABLE.inner.lock().unwrap();
-    #[allow(clippy::cast_sign_loss, clippy::indexing_slicing)] // according to libc
-    let state = inner.open[fd as usize];
+    #[allow(clippy::cast_sign_loss)] // according to libc
+    let state = *inner.open.get(fd as usize).ok_or(Error::OutOfRange)?;
     let port = match state {
         SockState::InUse { port, .. } => port,
         SockState::Unused => 0,
     };
-    #[allow(clippy::cast_sign_loss, clippy::indexing_slicing)] // according to libc
-    inner.open[fd as usize] = SockState::Unused;
+    #[allow(clippy::cast_sign_loss)] // according to libc
+    *inner.open.get_mut(fd as usize).ok_or(Error::OutOfRange)? = SockState::Unused;
     inner.free_fd.push_front(fd);
     free_port(port);
     Ok(())
@@ -168,6 +168,7 @@ pub(crate) fn free_fd(fd: i32) -> Result<()> {
 fn bind_port(port: u16, addr: IpAddr, fd: i32) -> Result<u16> {
     #[allow(clippy::unwrap_used)]
     let mut inner = PORT_TABLE.inner.lock().unwrap();
+    #[allow(clippy::integer_arithmetic)] // impossible to underflow
     if inner.info.len() == u16::MAX as usize - 1 {
         return Err(Error::NoBuf);
     }

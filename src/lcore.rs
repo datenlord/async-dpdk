@@ -9,8 +9,8 @@ use dpdk_sys::{
 
 /// Lcore role.
 #[repr(u32)]
-#[non_exhaustive]
 #[derive(Copy, Clone, Debug)]
+#[allow(clippy::exhaustive_enums)] // DPDK defined
 pub enum Role {
     /// An eal-created thread.
     Eal = rte_lcore_role_t_ROLE_RTE,
@@ -57,9 +57,12 @@ pub fn role(lcore_id: u32) -> Role {
 /// Get current socket id.
 #[inline]
 #[must_use]
-pub fn socket_id() -> u32 {
+pub fn socket_id() -> i32 {
     // SAFETY: ffi
-    unsafe { rte_socket_id() }
+    #[allow(clippy::cast_possible_wrap)] // legal socket_id should be less than i32::MAX
+    unsafe {
+        rte_socket_id() as i32
+    }
 }
 
 /// Get socket count.

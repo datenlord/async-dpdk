@@ -18,5 +18,5 @@ libc = "0.2"
 thiserror = "1.0"
 tokio = { version = "1.20", features = ["full"] }
 
-# [patch.'https://github.com/datenlord/dpdk-sys']
-# dpdk-sys = { path = "../dpdk-sys" }
+[patch.'https://github.com/datenlord/dpdk-sys']
+dpdk-sys = { path = "../dpdk-sys" }

@@ -15,7 +15,7 @@ use tokio::{
 };
 
 use crate::mbuf::Mbuf;
-use crate::proto::{ETHER_HDR_LEN, IP_NEXT_PROTO_UDP};
+use crate::proto::{L3Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP};
 use crate::udp::handle_ipv4_udp;
 use crate::{Error, Result};
 
@@ -24,7 +24,7 @@ const MAX_PKT_BURST: u16 = 32;
 /// Channel size for `TxAgent`.
 const TX_CHAN_SIZE: usize = 256;
 /// The capacity of a `TxBuffer`.
-const TX_BUF_SIZE: usize = 1024;
+const TX_BUF_SIZE: u16 = 1024;
 /// The number of mbufs to flush a `TxBuffer`.
 #[allow(dead_code)]
 const TX_BUF_THRESH: usize = 8;
@@ -68,10 +68,13 @@ struct IpFragDeathRow {
 #[allow(unsafe_code)]
 #[allow(clippy::missing_docs_in_private_items)]
 impl IpFragmentTable {
-    fn new(socket_id: u32) -> Result<Self> {
+    fn new(socket_id: i32) -> Result<Self> {
         const MS_PER_S: u64 = 1000;
         // SAFETY: ffi
-        let max_cycles = unsafe { (rte_get_tsc_hz() + MS_PER_S - 1) / MS_PER_S * MS_PER_S };
+        let max_cycles = #[allow(clippy::integer_arithmetic)]
+        unsafe {
+            (rte_get_tsc_hz() + MS_PER_S - 1) / MS_PER_S * MS_PER_S
+        };
         // SAFETY: ffi
         let ptr = unsafe {
             rte_ip_frag_table_create(
@@ -79,7 +82,7 @@ impl IpFragmentTable {
                 IP_FRAG_TABLE_BUCKET_SIZE,
                 IP_FRAG_TABLE_MAX_ENTRIES,
                 max_cycles,
-                socket_id as _,
+                socket_id,
             )
         };
         let tbl = NonNull::new(ptr).ok_or(Error::NoMem)?;
@@ -101,14 +104,14 @@ impl Drop for IpFragmentTable {
 #[allow(unsafe_code)]
 #[allow(clippy::missing_docs_in_private_items)]
 impl IpFragDeathRow {
-    fn new(socket_id: u32) -> Result<Self> {
+    fn new(socket_id: i32) -> Result<Self> {
         // SAFETY: ffi, check not null later.
         let ptr = unsafe {
             rte_zmalloc_socket(
                 cstring!("death_row"),
                 mem::size_of::<rte_ip_frag_death_row>(),
                 0,
-                socket_id as _,
+                socket_id,
             )
             .cast::<rte_ip_frag_death_row>()
         };
@@ -135,10 +138,10 @@ impl Drop for IpFragDeathRow {
 #[allow(unsafe_code)]
 fn parse_ether(m: &Mbuf) -> Option<(u32, u8)> {
     let data = m.data_slice();
-    if data.len() < ETHER_HDR_LEN {
+    if data.len() < ETHER_HDR_LEN as usize {
         return None;
     }
-    let remain = data.len() - ETHER_HDR_LEN;
+    let remain = data.len().wrapping_sub(ETHER_HDR_LEN as _);
     // SAFETY: mbuf data size is greater than `rte_ether_hdr` size
     #[allow(clippy::cast_ptr_alignment)]
     let ether_hdr = unsafe { &*(data.as_ptr().cast::<rte_ether_hdr>()) };
@@ -164,7 +167,7 @@ fn parse_ether(m: &Mbuf) -> Option<(u32, u8)> {
                 let pm = &mut *(m.as_ptr());
                 pm.tx_offload_union
                     .tx_offload_struct
-                    .set_l3_len(mem::size_of::<rte_ipv4_hdr>() as _);
+                    .set_l3_len(L3Protocol::Ipv4.length());
             }
             // SAFETY: remain mbuf data size is greater than `rte_ipv4_hdr` size
             #[allow(trivial_casts)]
@@ -181,7 +184,7 @@ fn parse_ether(m: &Mbuf) -> Option<(u32, u8)> {
                 let pm = &mut *(m.as_ptr());
                 pm.tx_offload_union
                     .tx_offload_struct
-                    .set_l3_len(mem::size_of::<rte_ipv6_hdr>() as _);
+                    .set_l3_len(L3Protocol::Ipv6.length());
             }
             // SAFETY: remain mbuf data size is greater than `rte_ipv6_hdr` size
             #[allow(trivial_casts)]
@@ -204,7 +207,7 @@ fn handle_ether(mut m: Mbuf, tbl: &mut IpFragmentTable, dr: &mut IpFragDeathRow)
     // l3 protocol, l4 protocol
     if let Some((ether_type, proto_id)) = parse_ether(&m) {
         #[allow(clippy::unwrap_used)]
-        m.adj(ETHER_HDR_LEN).unwrap();
+        m.adj(ETHER_HDR_LEN as _).unwrap();
         match ether_type {
             RTE_ETHER_TYPE_IPV4 => {
                 let ptr = m.data_slice_mut().as_mut_ptr();
@@ -224,9 +227,11 @@ fn handle_ether(mut m: Mbuf, tbl: &mut IpFragmentTable, dr: &mut IpFragDeathRow)
                         )
                     };
                     if mo.is_null() {
+                        #[allow(clippy::mem_forget)] // later dropped by head
                         mem::forget(m);
                         None // in need of more fragments
                     } else if mo != m.as_ptr() {
+                        #[allow(clippy::mem_forget)] // later dropped by head
                         mem::forget(m);
                         #[allow(clippy::shadow_unrelated, clippy::unwrap_used)] // they're related
                         let m = Mbuf::new_with_ptr(mo).unwrap();
@@ -255,7 +260,7 @@ fn handle_ether(mut m: Mbuf, tbl: &mut IpFragmentTable, dr: &mut IpFragDeathRow)
 #[allow(unsafe_code)]
 impl RxAgent {
     /// Start an `RxAgent`, spawn a thread to do the polling job.
-    pub(crate) fn start(socket_id: u32) -> Arc<Self> {
+    pub(crate) fn start(socket_id: i32) -> Arc<Self> {
         let running = AtomicBool::new(true);
         let this = Arc::new(RxAgent {
             running,
@@ -357,6 +362,7 @@ impl Drop for TxAgent {
     fn drop(&mut self) {
         #[allow(clippy::unwrap_used)]
         let rt = self.rt.take().unwrap();
+        #[allow(clippy::mem_forget)]
         mem::forget(rt);
     }
 }
@@ -366,19 +372,17 @@ impl Drop for TxAgent {
 #[derive(Debug)]
 struct TxBuffer {
     /// Start index of mbufs.
-    start: usize,
+    start: u16,
     /// End index of mbufs.
-    end: usize,
+    end: u16,
     /// Total number of mbufs held.
-    size: usize,
-    /// Total capacity of this buffer.
-    capacity: usize,
+    size: u16,
     /// `port_id` that the mbufs are sent to.
     port_id: u16,
     /// `queue_id` that the mbufs are sent to.
     queue_id: u16,
     /// `mbuf`s held.
-    mbufs: [*mut rte_mbuf; TX_BUF_SIZE],
+    mbufs: [*mut rte_mbuf; TX_BUF_SIZE as usize],
 }
 
 // SAFETY: `TxBuffer` is `Send`.
@@ -389,12 +393,11 @@ unsafe impl Send for TxBuffer {}
 impl TxBuffer {
     /// Allocate a `TxBuffer` on the given port and queue.
     fn new(port_id: u16, queue_id: u16) -> Self {
-        let mbufs = [ptr::null_mut(); TX_BUF_SIZE];
+        let mbufs = [ptr::null_mut(); TX_BUF_SIZE as usize];
         Self {
             start: 0,
             end: 0,
             size: 0,
-            capacity: TX_BUF_SIZE,
             port_id,
             queue_id,
             mbufs,
@@ -408,7 +411,7 @@ impl TxBuffer {
             // SAFETY: ffi
             unsafe {
                 #[allow(clippy::cast_ptr_alignment)]
-                let ether_dst = rte_pktmbuf_prepend(m, ETHER_HDR_LEN as _).cast::<rte_ether_hdr>();
+                let ether_dst = rte_pktmbuf_prepend(m, ETHER_HDR_LEN).cast::<rte_ether_hdr>();
                 (*ether_dst).ether_type = ether_src.ether_type;
                 rte_ether_addr_copy(&(*ether_src).src_addr, &mut (*ether_dst).src_addr);
                 rte_ether_addr_copy(&(*ether_src).dst_addr, &mut (*ether_dst).dst_addr);
@@ -418,21 +421,24 @@ impl TxBuffer {
 
     /// Send any packets queued up for transmission on a port and HW queue.
     #[inline]
+    #[allow(clippy::too_many_lines)]
     fn buffer(&mut self, m: Mbuf) -> Result<()> {
         // Put the new mbuf at the end of buffer.
         if m.pkt_len() < RTE_ETHER_MTU as usize {
-            if self.capacity - self.size < 1 {
+            if TX_BUF_SIZE.wrapping_sub(self.size) < 1 {
                 return Err(Error::NoBuf);
             }
-            #[allow(clippy::indexing_slicing)]
-            self.mbufs[self.end] = m.as_ptr();
-            self.end = (self.end + 1) % self.capacity;
-            self.size += 1;
+            #[allow(clippy::indexing_slicing)] // self.end < TX_BUF_SIZE
+            self.mbufs[self.end as usize] = m.as_ptr();
+            self.end = self.end.wrapping_add(1).wrapping_rem(TX_BUF_SIZE);
+            self.size = self.size.wrapping_add(1);
+            #[allow(clippy::mem_forget)] // later dropped by eth_tx_burst
             mem::forget(m);
         } else {
             // need fragment
-            let nb_frags = m.pkt_len() / RTE_ETHER_MTU as usize + 1;
-            if self.capacity - self.size < nb_frags + 1 {
+            let nb_frags = m.pkt_len().wrapping_div(RTE_ETHER_MTU as _).wrapping_add(1);
+            // Ensure there's enough buffer to hold fragmented data.
+            if (TX_BUF_SIZE.wrapping_sub(self.size) as usize) < nb_frags.wrapping_add(1) {
                 return Err(Error::NoBuf);
             }
             let mut frags: Vec<*mut rte_mbuf> = vec![ptr::null_mut(); nb_frags];
@@ -444,11 +450,13 @@ impl TxBuffer {
                     as *const rte_ether_hdr)
             };
             // SAFETY: ffi
-            let _ = unsafe { rte_pktmbuf_adj(pm, ETHER_HDR_LEN as _) };
+            let _ = unsafe { rte_pktmbuf_adj(pm, ETHER_HDR_LEN) };
             // SAFETY: ffi
             let errno = unsafe {
                 let l3_type = (*pm).packet_type_union.packet_type & RTE_PTYPE_L3_MASK;
                 if l3_type == RTE_PTYPE_L3_IPV4 {
+                    #[allow(clippy::cast_possible_truncation)]
+                    // nb_frags < TX_BUF_SIZE checked, 1500 < u16::MAX
                     rte_ipv4_fragment_packet(
                         pm,
                         frags.as_mut_ptr(),
@@ -458,6 +466,8 @@ impl TxBuffer {
                         (*pm).pool,
                     )
                 } else if l3_type == RTE_PTYPE_L3_IPV6 {
+                    #[allow(clippy::cast_possible_truncation)]
+                    // nb_frags < TX_BUF_SIZE checked, 1500 < u16::MAX
                     rte_ipv6_fragment_packet(
                         pm,
                         frags.as_mut_ptr(),
@@ -471,22 +481,30 @@ impl TxBuffer {
                 }
             };
             Error::from_ret(errno)?;
-            #[allow(clippy::shadow_unrelated, clippy::cast_sign_loss)]
-            // they're related actually, errno is greater than 0
-            let nb_frags = errno as usize;
-            #[allow(clippy::indexing_slicing)]
-            Self::populate_ether_hdr(ether_src, &frags[..nb_frags]);
+            #[allow(
+                clippy::shadow_unrelated,
+                clippy::cast_sign_loss,
+                clippy::cast_possible_truncation
+            )]
+            // they're related actually, errno is greater than 0, errno < TX_BUF_SIZE
+            let nb_frags = errno as u16;
+            Self::populate_ether_hdr(
+                ether_src,
+                frags.get(..nb_frags as _).ok_or(Error::OutOfRange)?,
+            );
             for (i, mb) in frags.iter().enumerate() {
-                let idest = (self.end + i) % self.capacity;
-                #[allow(clippy::indexing_slicing)]
-                self.mbufs[idest] = *mb;
+                #[allow(clippy::cast_possible_truncation)]
+                // i < frags.len() < TX_BUF_SIZE < u16::MAX
+                let idest = self.end.wrapping_add(i as _).wrapping_rem(TX_BUF_SIZE);
+                #[allow(clippy::indexing_slicing)] // idest < TX_BUF_SIZE
+                self.mbufs[idest as usize] = *mb;
             }
-            self.end = (self.end + nb_frags) % self.capacity;
-            self.size += nb_frags;
+            self.end = self.end.wrapping_add(nb_frags).wrapping_rem(TX_BUF_SIZE);
+            self.size = self.size.wrapping_add(nb_frags);
         }
 
         if self.start < self.end {
-            let to_send = (self.end - self.start) as u16;
+            let to_send = self.end.wrapping_sub(self.start);
             // if to_send < TX_BUF_THRESH {
             //     return;
             // }
@@ -495,14 +513,16 @@ impl TxBuffer {
                 rte_eth_tx_burst(
                     self.port_id,
                     self.queue_id,
-                    self.mbufs.as_mut_ptr().add(self.start),
+                    self.mbufs.as_mut_ptr().add(self.start as _),
                     to_send,
                 )
             };
-            self.start += sent as usize;
+            self.start = self.start.wrapping_add(sent);
         } else {
-            let to_send1 = (self.capacity - self.start) as u16;
-            let to_send2 = self.end as u16;
+            #[allow(clippy::cast_possible_truncation)] // 2 * TX_BUF_SIZE < u16::MAX
+            let to_send1 = TX_BUF_SIZE.wrapping_sub(self.start);
+            #[allow(clippy::cast_possible_truncation)] // self.end < TX_BUF_SIZE < u16::MAX
+            let to_send2 = self.end;
             // if to_send1 + to_send2 < TX_BUF_THRESH {
             //     return;
             // }
@@ -511,12 +531,12 @@ impl TxBuffer {
                 rte_eth_tx_burst(
                     self.port_id,
                     self.queue_id,
-                    self.mbufs.as_mut_ptr().add(self.start),
+                    self.mbufs.as_mut_ptr().add(self.start as _),
                     to_send1,
                 )
             };
             // SAFETY: ffi
-            sent += unsafe {
+            let sent2 = unsafe {
                 rte_eth_tx_burst(
                     self.port_id,
                     self.queue_id,
@@ -524,7 +544,9 @@ impl TxBuffer {
                     to_send2,
                 )
             };
-            self.start = self.start.wrapping_add(sent as _) % self.capacity;
+            sent = sent.wrapping_add(sent2);
+            self.start = self.start.wrapping_add(sent);
+            self.start = self.start.wrapping_rem(TX_BUF_SIZE);
         }
         Ok(())
     }

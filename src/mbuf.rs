@@ -10,6 +10,16 @@ use dpdk_sys::{
 };
 use std::{mem::MaybeUninit, ptr::NonNull, slice};
 
+/// In this crate we use usize as length for convenience, however DPDK use u16 to represent
+/// length, we should check the `len` argument is not too large for u16.
+macro_rules! check_len {
+    ($len:expr) => {
+        if $len < u16::MAX as usize {
+            return Err(Error::InvalidArg);
+        }
+    };
+}
+
 ///
 /// The mbuf library provides the ability to allocate and free buffers (mbufs) that may be
 /// used by the DPDK application to store message buffers. The message buffers are stored
@@ -73,16 +83,17 @@ impl Mbuf {
     ///
     /// This function creates and initializes a packet mbuf pool.
     #[inline]
-    pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: u32) -> Result<Mempool> {
+    pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: i32) -> Result<Mempool> {
         // SAFETY: ffi
         let ptr = unsafe {
+            #[allow(clippy::cast_possible_truncation)] // 0x880 < u16::MAX
             rte_pktmbuf_pool_create(
                 cstring!(name),
                 n,
                 cache_size,
                 0,
                 RTE_MBUF_DEFAULT_BUF_SIZE as u16,
-                socket_id as _,
+                socket_id,
             )
         };
         let inner = MempoolInner::new(ptr)?;
@@ -192,8 +203,12 @@ impl Mbuf {
     /// without modifying the mbuf.
     #[inline]
     pub fn prepend(&mut self, len: usize) -> Result<&mut [u8]> {
+        check_len!(len);
         // SAFETY: ffi
-        let data = unsafe { rte_pktmbuf_prepend(self.as_ptr(), len as _).cast::<u8>() };
+        let data = unsafe {
+            #[allow(clippy::cast_possible_truncation)] // checked
+            rte_pktmbuf_prepend(self.as_ptr(), len as _).cast::<u8>()
+        };
         if data.is_null() {
             return Err(Error::InvalidArg);
         }
@@ -208,8 +223,12 @@ impl Mbuf {
     /// NULL, without modifying the mbuf.
     #[inline]
     pub fn append(&mut self, len: usize) -> Result<&mut [u8]> {
+        check_len!(len);
         // SAFETY: ffi
-        let data = unsafe { rte_pktmbuf_append(self.as_ptr(), len as _).cast::<u8>() };
+        let data = unsafe {
+            #[allow(clippy::cast_possible_truncation)] // checked
+            rte_pktmbuf_append(self.as_ptr(), len as _).cast::<u8>()
+        };
         if data.is_null() {
             return Err(Error::InvalidArg);
         }
@@ -224,8 +243,12 @@ impl Mbuf {
     /// without modifying the mbuf.
     #[inline]
     pub fn adj(&mut self, len: usize) -> Result<()> {
+        check_len!(len);
         // SAFETY: ffi
-        let data = unsafe { rte_pktmbuf_adj(self.as_ptr(), len as _).cast::<u8>() };
+        let data = unsafe {
+            #[allow(clippy::cast_possible_truncation)] // checked
+            rte_pktmbuf_adj(self.as_ptr(), len as _).cast::<u8>()
+        };
         if data.is_null() {
             Err(Error::InvalidArg)
         } else {
@@ -239,8 +262,12 @@ impl Mbuf {
     /// and return -1 without modifying the mbuf.
     #[inline]
     pub fn trim(&mut self, len: usize) -> Result<()> {
+        check_len!(len);
         // SAFETY: ffi
-        let res = unsafe { rte_pktmbuf_trim(self.as_ptr(), len as _) };
+        let res = unsafe {
+            #[allow(clippy::cast_possible_truncation)] // checked
+            rte_pktmbuf_trim(self.as_ptr(), len as _)
+        };
         if res == 0 {
             Ok(())
         } else {

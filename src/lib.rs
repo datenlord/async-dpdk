@@ -64,15 +64,15 @@
     clippy::get_unwrap,
     clippy::if_then_some_else_none,
     // clippy::implicit_return, it's idiomatic Rust code.
-    // clippy::indexing_slicing, required in the project
+    clippy::indexing_slicing,
     // clippy::inline_asm_x86_att_syntax, stick to intel syntax
     clippy::inline_asm_x86_intel_syntax,
-    // clippy::integer_arithmetic, required in the project
+    clippy::integer_arithmetic,
     // clippy::integer_division, required in the project
     clippy::let_underscore_must_use,
     clippy::lossy_float_literal,
     clippy::map_err_ignore,
-    // clippy::mem_forget, required in the project
+    clippy::mem_forget,
     clippy::missing_docs_in_private_items,
     clippy::missing_enforced_import_renames,
     clippy::missing_inline_in_public_items,
@@ -107,9 +107,6 @@
     clippy::wildcard_enum_match_arm,
 )]
 #![allow(
-    clippy::multiple_crate_versions, // caused by the dependency, can't be fixed
-    clippy::cast_possible_truncation, // TODO
-    clippy::cast_possible_wrap,
     clippy::missing_errors_doc,
     clippy::missing_panics_doc,
 )]

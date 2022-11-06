@@ -23,7 +23,7 @@ pub struct EthDev {
     /// `port_id` identifying this `EthDev`.
     port_id: u16,
     /// `socket_id` that this `EthDev` is on.
-    socket_id: u32,
+    socket_id: i32,
     /// An agent tx thread if the device is started.
     tx_agent: Option<Arc<TxAgent>>,
     /// An agent rx thread if the device is started.
@@ -84,10 +84,9 @@ impl EthDev {
         if socket_id < 0 {
             return Err(Error::InvalidArg); // port_id is invalid
         }
-        #[allow(clippy::cast_sign_loss)] // `socket_id` is greater than 0
-        let socket_id = socket_id as u32;
 
         let nb_ports = EthDev::available_ports();
+        #[allow(clippy::integer_arithmetic)]
         let n_elem = (nb_ports * (u32::from(n_rxd) + u32::from(n_txd) + 32)).max(8192);
 
         let mut tx_queue = vec![];
@@ -120,7 +119,7 @@ impl EthDev {
     /// Get socket id.
     #[inline]
     #[must_use]
-    pub fn socket_id(&self) -> u32 {
+    pub fn socket_id(&self) -> i32 {
         self.socket_id
     }
 
@@ -147,11 +146,15 @@ impl EthDev {
         #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_set_ptypes(self.port_id, 0, ptr::null_mut(), 0) };
         Error::from_ret(errno)?;
+
         // Start tx agent
+        #[allow(clippy::cast_possible_truncation)] // self.tx_queue.len() checked
         for (queue_id, chan) in self.tx_chan.iter_mut().enumerate() {
             *chan = Some(tx_agent.register(self.port_id, queue_id as _));
         }
+
         // Start rx agent
+        #[allow(clippy::cast_possible_truncation)] // self.rx_queue.len() checked
         self.rx_queue
             .iter()
             .enumerate()
@@ -169,10 +172,13 @@ impl EthDev {
         let rx_agent = self.rx_agent.take().ok_or(Error::BrokenPipe)?;
         let tx_agent = self.tx_agent.take().ok_or(Error::BrokenPipe)?;
 
+        #[allow(clippy::cast_possible_truncation)] // self.tx_queue.len() checked
         self.tx_queue
             .iter()
             .enumerate()
             .for_each(|(queue_id, _)| tx_agent.unregister(self.port_id, queue_id as _));
+
+        #[allow(clippy::cast_possible_truncation)] // self.rx_queue.len() checked
         self.rx_queue
             .iter()
             .enumerate()
@@ -306,12 +312,15 @@ impl EthRxQueue {
     fn init(
         port_id: u16,
         queue_id: u16,
-        socket_id: u32,
+        socket_id: i32,
         n_rxd: u16,
         n_elem: u32,
         dev_info: &rte_eth_dev_info,
         eth_conf: &rte_eth_conf,
     ) -> Result<Arc<Self>> {
+        if socket_id < 0 {
+            return Err(Error::InvalidArg);
+        }
         let mp = Mbuf::create_mp(
             format!("rx_{}_{}", port_id, queue_id).as_str(),
             n_elem,
@@ -322,7 +331,15 @@ impl EthRxQueue {
         rx_conf.offloads = eth_conf.rxmode.offloads;
         // SAFETY: ffi
         let errno = unsafe {
-            rte_eth_rx_queue_setup(port_id, queue_id, n_rxd, socket_id, &rx_conf, mp.as_ptr())
+            #[allow(clippy::cast_sign_loss)] // sign checked
+            rte_eth_rx_queue_setup(
+                port_id,
+                queue_id,
+                n_rxd,
+                socket_id as _,
+                &rx_conf,
+                mp.as_ptr(),
+            )
         };
         Error::from_ret(errno)?;
         Ok(Arc::new(Self { queue_id, _mp: mp }))
@@ -335,11 +352,14 @@ impl EthTxQueue {
     fn init(
         port_id: u16,
         queue_id: u16,
-        socket_id: u32,
+        socket_id: i32,
         n_txd: u16,
         dev_info: &rte_eth_dev_info,
         eth_conf: &rte_eth_conf,
     ) -> Result<Arc<Self>> {
+        if socket_id < 0 {
+            return Err(Error::InvalidArg);
+        }
         let mp = Mbuf::create_mp(
             format!("tx_{}_{}", port_id, queue_id).as_str(),
             1024,
@@ -349,8 +369,10 @@ impl EthTxQueue {
         let mut tx_conf = dev_info.default_txconf;
         tx_conf.offloads = eth_conf.txmode.offloads;
         // SAFETY: ffi
-        let errno =
-            unsafe { rte_eth_tx_queue_setup(port_id, queue_id, n_txd, socket_id, &tx_conf) };
+        let errno = unsafe {
+            #[allow(clippy::cast_sign_loss)] // sign checked
+            rte_eth_tx_queue_setup(port_id, queue_id, n_txd, socket_id as _, &tx_conf)
+        };
         Error::from_ret(errno)?;
         Ok(Arc::new(Self { queue_id, mp }))
     }

@@ -351,7 +351,7 @@ mod test {
             16,
             0,
             0,
-            lcore::socket_id() as _,
+            lcore::socket_id(),
             mempool::MEMPOOL_SINGLE_CONSUMER | mempool::MEMPOOL_SINGLE_PRODUCER,
         )
         .unwrap();

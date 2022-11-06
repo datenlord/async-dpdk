@@ -42,6 +42,7 @@ pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
     }
     let ndev = addrs.len().min(ndev as usize);
     for (i, addr) in addrs.into_iter().enumerate().take(ndev) {
+        #[allow(clippy::cast_possible_truncation)]
         let port_id = i as u16;
         // SAFETY: ffi
         let dev_info = unsafe {

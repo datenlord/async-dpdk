@@ -81,6 +81,7 @@ impl Error {
 
     #[inline]
     pub fn from_ret(errno: i32) -> Result<()> {
+        #[allow(clippy::integer_arithmetic)]
         let errno = -errno;
         match errno {
             e if e <= 0 => Ok(()),

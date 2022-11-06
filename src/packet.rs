@@ -84,12 +84,15 @@ impl Packet {
                     } else {
                         head = Some(tail);
                     }
+                    // Out of space, should alloc a new mbuf.
                     tail = Mbuf::new(mp)?;
                 }
                 let delta = tail.tailroom();
                 let data = tail.append(delta)?;
+                #[allow(clippy::indexing_slicing)]
+                // frag.len() > delta, implied by while condition
                 data.copy_from_slice(&frag[..delta]); // TODO: zero-copy
-                len -= delta;
+                len = len.wrapping_sub(delta);
                 // SAFETY: delta > frag's remain size
                 unsafe {
                     frag.advance_mut(delta);
@@ -107,13 +110,13 @@ impl Packet {
         unsafe {
             m.tx_offload_union
                 .tx_offload_struct
-                .set_l2_len(ETHER_HDR_LEN as _);
+                .set_l2_len(ETHER_HDR_LEN);
             m.tx_offload_union
                 .tx_offload_struct
-                .set_l3_len(self.l3protocol.length() as _);
+                .set_l3_len(self.l3protocol.length());
             m.tx_offload_union
                 .tx_offload_struct
-                .set_l4_len(self.l4protocol.length() as _);
+                .set_l4_len(self.l4protocol.length());
         }
         Ok(mbuf)
     }

@@ -8,14 +8,14 @@ use dpdk_sys::{
 /// Indicating that the struct is a protocol.
 pub(crate) trait Protocol {
     /// Protocol header length.
-    fn length(&self) -> usize;
+    fn length(&self) -> u16;
 }
 
 /// UDP `proto_id`, to be populated in IP header.
 pub(crate) const IP_NEXT_PROTO_UDP: u8 = 0x11;
 
 /// Ethernet header length.
-pub(crate) const ETHER_HDR_LEN: usize = 14;
+pub(crate) const ETHER_HDR_LEN: u16 = 14;
 
 /// Ether proto number, to be populated in `rte_mbuf`.
 pub(crate) const PTYPE_L2_ETHER: u32 = RTE_PTYPE_L2_ETHER;
@@ -34,7 +34,7 @@ pub enum L3Protocol {
 }
 
 impl Protocol for L3Protocol {
-    fn length(&self) -> usize {
+    fn length(&self) -> u16 {
         match *self {
             L3Protocol::Ipv4 => 20,
             L3Protocol::Ipv6 => 40,
@@ -70,7 +70,7 @@ pub enum L4Protocol {
 }
 
 impl Protocol for L4Protocol {
-    fn length(&self) -> usize {
+    fn length(&self) -> u16 {
         match *self {
             L4Protocol::UDP => 8,
             L4Protocol::TCP => 20,

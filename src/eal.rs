@@ -130,7 +130,10 @@ impl Config {
     pub fn new() -> Self {
         let env_args = std::env::args().collect::<Vec<_>>();
         Self {
-            args: vec![CString::new(env_args[0].as_str()).unwrap()],
+            args: vec![
+                #[allow(clippy::indexing_slicing)] // the first of env args is the program name
+                CString::new(env_args[0].as_str()).unwrap(),
+            ],
             addrs: vec![],
         }
     }
@@ -246,9 +249,17 @@ impl Config {
             .iter()
             .map(|s| s.as_ptr() as *mut c_char)
             .collect::<Vec<_>>();
+
+        if pargs.len() < i32::MAX as usize {
+            return Err(Error::TooBig);
+        }
         // SAFETY: ffi
         #[allow(unsafe_code)]
-        let ret = unsafe { rte_eal_init(pargs.len() as _, pargs.as_mut_ptr()) };
+        let ret = unsafe {
+            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
+            // arg length checked
+            rte_eal_init(pargs.len() as _, pargs.as_mut_ptr())
+        };
         if ret < 0 {
             return Err(Error::from_errno());
         }

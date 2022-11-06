@@ -82,16 +82,18 @@ impl UdpSocket {
         let rx = self.mailbox.lock().unwrap().recv();
         #[allow(clippy::unwrap_used)]
         let (addr, data) = rx.await.unwrap();
-        let mut len = 0;
+        let mut len: usize = 0;
         let mut buf = buf;
         for frag in data.frags {
             let mut frag = frag.freeze();
             let sz = frag.remaining().min(buf.len());
-            #[allow(clippy::indexing_slicing)]
-            frag.copy_to_slice(&mut buf[..sz]);
-            #[allow(clippy::indexing_slicing)]
-            buf = &mut buf[sz..];
-            len += sz;
+            #[allow(clippy::indexing_slicing)] // sz <= buf.len()
+            frag.copy_to_slice(&mut buf[..sz]); // TODO zero-copy
+            buf = {
+                #[allow(clippy::indexing_slicing)] // sz <= buf.len()
+                &mut buf[sz..]
+            };
+            len = len.wrapping_add(sz);
             if buf.is_empty() {
                 break;
             }
@@ -116,7 +118,11 @@ impl UdpSocket {
         let l3_sz = L3Protocol::Ipv4.length();
         let l4_sz = L4Protocol::UDP.length();
 
-        let mut hdr = BytesMut::with_capacity(l2_sz + l3_sz + l4_sz);
+        if buf.len().wrapping_add(l3_sz as _).wrapping_add(l4_sz as _) < u16::MAX as usize {
+            return Err(Error::InvalidArg);
+        }
+
+        let mut hdr = BytesMut::with_capacity(l2_sz.wrapping_add(l3_sz).wrapping_add(l4_sz) as _);
         let mut pkt = Packet::new(L3Protocol::Ipv4, L4Protocol::UDP);
 
         // fill header
@@ -129,18 +135,30 @@ impl UdpSocket {
             ether_hdr.src_addr = self.eth_addr;
             // TODO send to real mac addr. implement ARP in the future!
             ether_hdr.dst_addr.addr_bytes.copy_from_slice(&[0xff; 6]);
-            ether_hdr.ether_type = (RTE_ETHER_TYPE_IPV4 as u16).to_be();
+            #[allow(clippy::cast_possible_truncation)] // 0x800 < u16::MAX
+            {
+                ether_hdr.ether_type = (RTE_ETHER_TYPE_IPV4 as u16).to_be();
+            }
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             unsafe {
-                hdr.advance_mut(l2_sz);
+                hdr.advance_mut(l2_sz as _);
             }
 
             // fill l3 header
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
-            let ip_hdr = unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_ipv4_hdr>()) };
+            let ip_hdr = unsafe {
+                #[allow(clippy::cast_possible_truncation)] // buf length checked
+                &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_ipv4_hdr>())
+            };
             ip_hdr.version_ihl_union.version_ihl = 0x45; // version = 4, ihl = 5
             ip_hdr.type_of_service = 0;
-            ip_hdr.total_length = ((buf.len() + l4_sz + l3_sz) as u16).to_be();
+            #[allow(clippy::cast_possible_truncation)] // buf length checked
+            {
+                ip_hdr.total_length = (buf.len() as u16)
+                    .wrapping_add(l4_sz)
+                    .wrapping_add(l3_sz)
+                    .to_be();
+            }
             ip_hdr.packet_id = IPID.fetch_add(1, Ordering::AcqRel).to_be();
             ip_hdr.fragment_offset = 0u16.to_be();
             ip_hdr.time_to_live = 64;
@@ -155,18 +173,21 @@ impl UdpSocket {
             ip_hdr.hdr_checksum = unsafe { rte_ipv4_cksum(ip_hdr).to_be() };
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             unsafe {
-                hdr.advance_mut(l3_sz);
+                hdr.advance_mut(l3_sz as _);
             }
 
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             let udp_hdr = unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_udp_hdr>()) };
             udp_hdr.src_port = self.port;
             udp_hdr.dst_port = addr.port();
-            udp_hdr.dgram_len = ((buf.len() + l4_sz) as u16).to_be();
+            #[allow(clippy::cast_possible_truncation)] // buf length checked
+            {
+                udp_hdr.dgram_len = (buf.len() as u16).wrapping_add(l4_sz).to_be();
+            }
             udp_hdr.dgram_cksum = 0;
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             unsafe {
-                hdr.advance_mut(l4_sz);
+                hdr.advance_mut(l4_sz as _);
             }
 
             pkt.append(hdr);
@@ -211,6 +232,7 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) {
     let src_ip_bytes: [u8; 4] = ip_hdr.src_addr.to_ne_bytes();
     let src_ip = IpAddr::from(src_ip_bytes);
 
+    #[allow(clippy::integer_arithmetic)] // the result < usize::MAX
     if data.len() < mem::size_of::<rte_ipv4_hdr>() + mem::size_of::<rte_udp_hdr>() {
         return;
     }
@@ -223,9 +245,10 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) {
     let _len = udp_hdr.dgram_len.to_be();
     let src_addr = SocketAddr::new(src_ip, src_port);
 
+    #[allow(clippy::integer_arithmetic)] // the result < usize::MAX
     let hdr_len = L3Protocol::Ipv4.length() + L4Protocol::UDP.length();
     #[allow(clippy::unwrap_used)]
-    m.adj(hdr_len).unwrap();
+    m.adj(hdr_len as _).unwrap();
     let packet = Packet::from_mbuf(m);
 
     if let Some(sockfd) = addr_2_sockfd(dst_port, dst_ip) {
