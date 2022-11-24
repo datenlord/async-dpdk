@@ -1,6 +1,12 @@
 //! RX/TX agent thread
+use crate::mbuf::Mbuf;
+use crate::proto::{L3Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP};
+use crate::socket::{self, RecvResult};
+use crate::udp::handle_ipv4_udp;
+use crate::{Error, Result};
 #[allow(clippy::wildcard_imports)] // too many of them
 use dpdk_sys::*;
+use log::{debug, error, info, trace, warn};
 use std::collections::{BTreeMap, BTreeSet};
 use std::mem;
 use std::ptr::{self, NonNull};
@@ -13,12 +19,6 @@ use tokio::{
     sync::mpsc,
     task::{self, JoinHandle},
 };
-
-use crate::mbuf::Mbuf;
-use crate::proto::{L3Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP};
-use crate::socket::{self, RecvResult};
-use crate::udp::handle_ipv4_udp;
-use crate::{Error, Result};
 
 /// Burst size for `rte_tx_burst` and `rte_rx_burst`.
 const MAX_PKT_BURST: u16 = 32;
@@ -149,13 +149,15 @@ fn parse_ether(m: &Mbuf) -> Option<(u32, u8)> {
     let ether_type = u32::from(ether_hdr.ether_type.to_be());
 
     match ether_type {
-        RTE_GTP_TYPE_IPV4 => {
+        RTE_ETHER_TYPE_IPV4 => {
             if remain < mem::size_of::<rte_ipv4_hdr>() {
+                warn!("Receive a unexpectedly short IPv4 packet");
                 return None;
             }
         }
-        RTE_GTP_TYPE_IPV6 => {
+        RTE_ETHER_TYPE_IPV6 => {
             if remain < mem::size_of::<rte_ipv6_hdr>() {
+                warn!("Receive a unexpectedly short IPv6 packet");
                 return None;
             }
         }
@@ -196,7 +198,10 @@ fn parse_ether(m: &Mbuf) -> Option<(u32, u8)> {
             };
             ip_hdr.proto
         }
-        _ => 0,
+        ether_type => {
+            debug!("Unrecognized ether type {ether_type}");
+            0
+        }
     };
     Some((ether_type, proto_id))
 }
@@ -211,8 +216,7 @@ fn handle_ether(
 ) -> Option<(i32, RecvResult)> {
     // l3 protocol, l4 protocol
     if let Some((ether_type, proto_id)) = parse_ether(&m) {
-        #[allow(clippy::unwrap_used)]
-        m.adj(ETHER_HDR_LEN as _).unwrap();
+        m.adj(ETHER_HDR_LEN as _).ok()?;
         match ether_type {
             RTE_ETHER_TYPE_IPV4 => {
                 let ptr = m.data_slice_mut().as_mut_ptr();
@@ -220,6 +224,7 @@ fn handle_ether(
                 let m = if unsafe { rte_ipv4_frag_pkt_is_fragmented(ptr.cast()) } == 0 {
                     Some(m)
                 } else {
+                    debug!("Packet need fragmentation");
                     // SAFETY: ffi
                     let mo = unsafe {
                         let tms = rte_rdtsc();
@@ -238,21 +243,22 @@ fn handle_ether(
                     } else if mo != m.as_ptr() {
                         #[allow(clippy::mem_forget)] // later dropped by head
                         mem::forget(m);
-                        #[allow(clippy::shadow_unrelated, clippy::unwrap_used)] // they're related
-                        let m = Mbuf::new_with_ptr(mo).unwrap();
+                        #[allow(clippy::shadow_unrelated)] // they're related
+                        let m = Mbuf::new_with_ptr(mo).ok()?;
                         Some(m)
                     } else {
                         Some(m)
                     }
                 }?;
-                #[allow(clippy::single_match)] // more protocols
-                return match proto_id {
-                    IP_NEXT_PROTO_UDP => handle_ipv4_udp(m),
-                    _ => None,
+                return if proto_id == IP_NEXT_PROTO_UDP {
+                    handle_ipv4_udp(m)
+                } else {
+                    debug!("Unrecognized proto id {proto_id}");
+                    None
                 };
             }
             RTE_ETHER_TYPE_IPV6 | RTE_ETHER_TYPE_ARP => {}
-            ether_type => eprintln!("Unsupported ether type {ether_type:x}"),
+            ether_type => error!("Unsupported ether type {ether_type:x}"),
         }
     }
     None
@@ -269,14 +275,12 @@ impl RxAgent {
         });
         let that = Arc::clone(&this);
         let _handle = task::spawn_blocking(move || {
-            #[allow(clippy::unwrap_used)]
-            let mut frag_tbl = IpFragmentTable::new(socket_id).unwrap();
-            #[allow(clippy::unwrap_used)]
-            let mut death_row = IpFragDeathRow::new(socket_id).unwrap();
+            let mut frag_tbl = IpFragmentTable::new(socket_id)?;
+            let mut death_row = IpFragDeathRow::new(socket_id)?;
             // TODO error handling
             while that.running.load(Ordering::Acquire) {
-                #[allow(clippy::unwrap_used)]
-                let tasks = that.tasks.lock().unwrap();
+                #[allow(clippy::map_err_ignore)]
+                let tasks = that.tasks.lock().map_err(|_| Error::Poisoned)?;
                 let task_iter = tasks.iter();
                 for &(port_id, queue_id) in task_iter {
                     let mut ptrs = vec![ptr::null_mut(); MAX_PKT_BURST as usize];
@@ -284,9 +288,9 @@ impl RxAgent {
                     let n = unsafe {
                         rte_eth_rx_burst(port_id, queue_id, ptrs.as_mut_ptr(), MAX_PKT_BURST)
                     };
+                    trace!("{n} packets received");
                     for ptr in ptrs.into_iter().take(n as _) {
-                        #[allow(clippy::unwrap_used)]
-                        let m = Mbuf::new_with_ptr(ptr).unwrap();
+                        let m = Mbuf::new_with_ptr(ptr)?;
                         if let Some((sockfd, res)) = handle_ether(m, &mut frag_tbl, &mut death_row)
                         {
                             socket::put_mailbox(sockfd, res);
@@ -294,6 +298,8 @@ impl RxAgent {
                     }
                 }
             }
+            info!("RxAgent thread terminated");
+            Result::<()>::Ok(())
         });
         this
     }
@@ -304,15 +310,25 @@ impl RxAgent {
     }
 
     /// Register a (`port_id`, `queue_id`) to an `RxAgent`.
-    pub(crate) fn register(self: &Arc<Self>, port_id: u16, queue_id: u16) {
-        #[allow(clippy::unwrap_used)]
-        let _ = self.tasks.lock().unwrap().insert((port_id, queue_id));
+    pub(crate) fn register(self: &Arc<Self>, port_id: u16, queue_id: u16) -> Result<()> {
+        #[allow(clippy::map_err_ignore)]
+        let _ = self
+            .tasks
+            .lock()
+            .map_err(|_| Error::Poisoned)?
+            .insert((port_id, queue_id));
+        Ok(())
     }
 
     /// Unregister a (`port_id`, `queue_id`) from an `RxAgent`.
-    pub(crate) fn unregister(self: &Arc<Self>, port_id: u16, queue_id: u16) {
-        #[allow(clippy::unwrap_used)]
-        let _ = self.tasks.lock().unwrap().remove(&(port_id, queue_id));
+    pub(crate) fn unregister(self: &Arc<Self>, port_id: u16, queue_id: u16) -> Result<()> {
+        #[allow(clippy::map_err_ignore)]
+        let _ = self
+            .tasks
+            .lock()
+            .map_err(|_| Error::Poisoned)?
+            .remove(&(port_id, queue_id));
+        Ok(())
     }
 }
 
@@ -334,23 +350,26 @@ impl TxAgent {
     }
 
     /// Register a (`port_id`, `queue_id`) to a `TxAgent`.
-    pub(crate) fn register(self: &Arc<Self>, port_id: u16, queue_id: u16) -> mpsc::Sender<Mbuf> {
+    pub(crate) fn register(
+        self: &Arc<Self>,
+        port_id: u16,
+        queue_id: u16,
+    ) -> Result<mpsc::Sender<Mbuf>> {
         let (tx, mut rx) = mpsc::channel::<Mbuf>(TX_CHAN_SIZE);
         #[allow(clippy::unwrap_used)]
-        let handle = self.rt.as_ref().unwrap().spawn(async move {
+        let handle = self.rt.as_ref().ok_or(Error::NotStart)?.spawn(async move {
             let mut txbuf = TxBuffer::new(port_id, queue_id);
             while let Some(m) = rx.recv().await {
-                #[allow(clippy::unwrap_used)]
-                txbuf.buffer(m).unwrap();
+                let _res = txbuf.buffer(m); // TODO buffer could be full, should notify the caller.
             }
         });
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::map_err_ignore)]
         let _prev = self
             .tasks
             .lock()
-            .unwrap()
-            .insert((port_id, queue_id), handle);
-        tx
+            .map_err(|_| Error::Poisoned)?
+            .insert((port_id, queue_id), handle); // XXX
+        Ok(tx)
     }
 
     /// Unregister a (`port_id`, `queue_id`) from a `TxAgent`.
@@ -521,6 +540,7 @@ impl TxBuffer {
                     to_send,
                 )
             };
+            trace!("{sent} packets sent");
             self.start = self.start.wrapping_add(sent);
         } else {
             #[allow(clippy::cast_possible_truncation)] // 2 * TX_BUF_SIZE < u16::MAX
@@ -549,6 +569,7 @@ impl TxBuffer {
                 )
             };
             sent = sent.wrapping_add(sent2);
+            trace!("{sent} packets sent");
             self.start = self.start.wrapping_add(sent);
             self.start = self.start.wrapping_rem(TX_BUF_SIZE);
         }

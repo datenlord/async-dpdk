@@ -6,14 +6,9 @@ use crate::{
     packet::Packet,
     Error, Result,
 };
-use dpdk_sys::{
-    rte_eth_conf, rte_eth_dev_adjust_nb_rx_tx_desc, rte_eth_dev_close, rte_eth_dev_configure,
-    rte_eth_dev_count_avail, rte_eth_dev_info, rte_eth_dev_info_get, rte_eth_dev_set_ptypes,
-    rte_eth_dev_socket_id, rte_eth_dev_start, rte_eth_dev_stop, rte_eth_macaddr_get,
-    rte_eth_promiscuous_disable, rte_eth_promiscuous_enable, rte_eth_promiscuous_get,
-    rte_eth_rx_queue_setup, rte_eth_tx_queue_setup, rte_ether_addr,
-    RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
-};
+#[allow(clippy::wildcard_imports)] // too many of them
+use dpdk_sys::*;
+use log::{debug, trace};
 use std::{fmt::Debug, mem::MaybeUninit, ptr, sync::Arc};
 use tokio::sync::mpsc;
 
@@ -73,6 +68,7 @@ impl EthDev {
         #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_configure(port_id, n_rxq, n_txq, &eth_conf) };
         Error::from_ret(errno)?;
+        trace!("Device {port_id} successfully configured");
         let mut n_rxd = 1024;
         let mut n_txd = 1024;
         // SAFETY: ffi
@@ -96,11 +92,13 @@ impl EthDev {
             tx_queue.push(EthTxQueue::init(
                 port_id, queue_id, socket_id, n_txd, &dev_info, &eth_conf,
             )?);
+            trace!("Device {port_id} successfully initialized tx_queue {queue_id}");
         }
         for queue_id in 0..n_rxq {
             rx_queue.push(EthRxQueue::init(
                 port_id, queue_id, socket_id, n_rxd, n_elem, &dev_info, &eth_conf,
             )?);
+            trace!("Device {port_id} successfully initialized rx_queue {queue_id}");
         }
 
         let tx_chan = (0..n_txq).map(|_| None).collect();
@@ -123,6 +121,13 @@ impl EthDev {
         self.socket_id
     }
 
+    /// Get port id.
+    #[inline]
+    #[must_use]
+    pub fn port_id(&self) -> u16 {
+        self.port_id
+    }
+
     /// Start an Ethernet device.
     ///
     /// The device start step is the last one and consists of setting the configured offload
@@ -142,6 +147,7 @@ impl EthDev {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_start(self.port_id) };
         Error::from_ret(errno)?;
+        debug!("Device {} successfully started", self.port_id);
         // SAFETY: ffi
         #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_set_ptypes(self.port_id, 0, ptr::null_mut(), 0) };
@@ -150,15 +156,14 @@ impl EthDev {
         // Start tx agent
         #[allow(clippy::cast_possible_truncation)] // self.tx_queue.len() checked
         for (queue_id, chan) in self.tx_chan.iter_mut().enumerate() {
-            *chan = Some(tx_agent.register(self.port_id, queue_id as _));
+            *chan = Some(tx_agent.register(self.port_id, queue_id as _)?);
         }
 
         // Start rx agent
         #[allow(clippy::cast_possible_truncation)] // self.rx_queue.len() checked
-        self.rx_queue
-            .iter()
-            .enumerate()
-            .for_each(|(queue_id, _)| rx_agent.register(self.port_id, queue_id as _));
+        for (queue_id, _) in self.rx_queue.iter().enumerate() {
+            rx_agent.register(self.port_id, queue_id as _)?;
+        }
 
         self.rx_agent = Some(rx_agent);
         self.tx_agent = Some(tx_agent);
@@ -179,15 +184,15 @@ impl EthDev {
             .for_each(|(queue_id, _)| tx_agent.unregister(self.port_id, queue_id as _));
 
         #[allow(clippy::cast_possible_truncation)] // self.rx_queue.len() checked
-        self.rx_queue
-            .iter()
-            .enumerate()
-            .for_each(|(queue_id, _)| rx_agent.unregister(self.port_id, queue_id as _));
+        for (queue_id, _) in self.rx_queue.iter().enumerate() {
+            rx_agent.unregister(self.port_id, queue_id as _)?;
+        }
 
         rx_agent.stop();
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_stop(self.port_id) };
         Error::from_ret(errno)?;
+        debug!("Device {} successfully stopped", self.port_id);
         Ok(())
     }
 

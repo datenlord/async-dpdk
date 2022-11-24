@@ -13,6 +13,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use dpdk_sys::{
     rte_ether_addr, rte_ether_hdr, rte_ipv4_cksum, rte_ipv4_hdr, rte_udp_hdr, RTE_ETHER_TYPE_IPV4,
 };
+use log::error;
 use std::{
     fmt::Debug,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
@@ -253,6 +254,6 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) -> Option<(i32, RecvResult)> {
     if let Some(sockfd) = addr_2_sockfd(dst_port, dst_ip) {
         return Some((sockfd, Ok((src_addr, packet))));
     }
-    eprintln!("sockfd not found: {dst_ip:?}:{dst_port}");
+    error!("sockfd not found: {dst_ip:?}:{dst_port}");
     None
 }

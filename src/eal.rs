@@ -7,6 +7,7 @@ use dpdk_sys::{
     rte_mp_disable,
 };
 use lazy_static::lazy_static;
+use log::error;
 use std::ffi::CString;
 use std::net::IpAddr;
 use std::str::FromStr;
@@ -261,6 +262,7 @@ impl Config {
             rte_eal_init(pargs.len() as _, pargs.as_mut_ptr())
         };
         if ret < 0 {
+            error!("Error initializing DPDK environment");
             return Err(Error::from_errno());
         }
         let context = Arc::new(Eal {});

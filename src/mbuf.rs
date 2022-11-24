@@ -26,13 +26,13 @@ macro_rules! check_len {
 /// in a mempool, using the Mempool Library.
 ///
 /// It looks like this:
-///     -------------------------------------------------------------------------------
+///     ---------------------------------------------------------------------------------
 ///     | `rte_mbuf` | priv data | head room |          frame data          | tail room |
-///     -------------------------------------------------------------------------------
-///     ^                      ^
-///  *`rte_mbuf`              `buf_addr`
-///                             <-data_off-><----------data_len----------->
-///                             <------------------------`buf_len`---------------------->
+///     ---------------------------------------------------------------------------------
+///     ^                        ^
+///     *`rte_mbuf`              `buf_addr`
+///                              <-data_off-><-----------data_len----------->
+///                              <------------------------`buf_len`--------------------->
 ///
 #[derive(Debug, Clone)]
 #[allow(missing_copy_implementations)]
@@ -181,7 +181,7 @@ impl Mbuf {
         // SAFETY: ffi; memory is initialized and valid
         unsafe {
             let data = rte_mbuf_buf_addr(m, (*m).pool).add((*m).data_off as _);
-            slice::from_raw_parts(data as *const u8, (*m).data_len as _)
+            slice::from_raw_parts(data, (*m).data_len as _)
         }
     }
 

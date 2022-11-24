@@ -1,15 +1,15 @@
 //! Net device.
 
-use dpdk_sys::{
-    cstring, rte_eth_dev_info, rte_eth_dev_info_get, rte_ether_addr, rte_free, rte_malloc,
-};
-use lazy_static::lazy_static;
-use std::{mem, net::IpAddr, sync::RwLock};
-
 use crate::{
     eth_dev::{EthDev, TxSender},
     Error, Result,
 };
+use dpdk_sys::{
+    cstring, rte_eth_dev_info, rte_eth_dev_info_get, rte_ether_addr, rte_free, rte_malloc,
+};
+use lazy_static::lazy_static;
+use log::{debug, error};
+use std::{mem, net::IpAddr, sync::RwLock};
 
 lazy_static! {
     /// Holding all probed Inet Devices.
@@ -63,6 +63,7 @@ pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
             ethdev,
             running: false,
         });
+        debug!("Ethdev {port_id} probed, bound to {addr:?}");
         // SAFETY: ffi, `dev_info`'s validity is checked upon its allocation
         #[allow(trivial_casts)]
         unsafe {
@@ -80,6 +81,7 @@ pub fn device_start() -> Result<()> {
     let inet_iter = inet_device.iter_mut();
     for dev in inet_iter {
         dev.ethdev.start()?;
+        debug!("Device {} started", dev.ethdev.port_id());
         dev.running = true;
     }
     Ok(())
@@ -93,6 +95,7 @@ pub fn device_stop() -> Result<()> {
     let inet_iter = inet_device.iter_mut();
     for dev in inet_iter {
         dev.ethdev.stop()?;
+        debug!("Device {} stopped", dev.ethdev.port_id());
         dev.running = false;
     }
     Ok(())
@@ -114,7 +117,7 @@ pub(crate) fn find_dev_by_ip(ip: IpAddr) -> Result<(TxSender, rte_ether_addr)> {
         #[allow(clippy::else_if_without_else)] // continue if not matched
         if dev.ip == ip {
             if !dev.running {
-                eprintln!("Device is not running!");
+                error!("Device is not running!");
                 return Err(Error::NoDev);
             }
             let sender = dev.ethdev.sender(0).ok_or(Error::NoDev)?;
@@ -122,6 +125,7 @@ pub(crate) fn find_dev_by_ip(ip: IpAddr) -> Result<(TxSender, rte_ether_addr)> {
             return Ok((sender, addr));
         } else if ip.is_unspecified() || ip.is_loopback() {
             if !dev.running {
+                debug!("Device is not running, try the next one");
                 continue;
             }
             let sender = dev.ethdev.sender(0).ok_or(Error::NoDev)?;

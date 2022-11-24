@@ -2,6 +2,7 @@
 
 use crate::{packet::Packet, Error, Result};
 use lazy_static::lazy_static;
+use log::{error, trace};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     net::{IpAddr, SocketAddr},
@@ -117,9 +118,11 @@ impl Mailbox {
     pub(crate) fn recv(&mut self) -> oneshot::Receiver<RecvResult> {
         let (tx, rx) = oneshot::channel();
         if let Some(res) = self.received.pop_front() {
+            trace!("Got a packet from recv buffer");
             #[allow(clippy::unwrap_used)] // rx is impossible to be dropped.
             tx.send(res).unwrap();
         } else {
+            trace!("Registered a channel");
             self.watcher = Some(tx);
         }
         rx
@@ -127,6 +130,7 @@ impl Mailbox {
 
     /// Put a packet into mailbox.
     pub(crate) fn put(&mut self, res: RecvResult) {
+        trace!("{:?} received a packet", self);
         if let Some(tx) = self.watcher.take() {
             #[allow(clippy::unwrap_used)]
             tx.send(res).unwrap();
@@ -173,6 +177,7 @@ fn bind_port(port: u16, addr: IpAddr, fd: i32) -> Result<u16> {
     let mut inner = PORT_TABLE.inner.lock().unwrap();
     #[allow(clippy::integer_arithmetic)] // impossible to underflow
     if inner.info.len() == u16::MAX as usize - 1 {
+        error!("Socket number exceeds");
         return Err(Error::NoBuf);
     }
     let port = if port == 0 {
@@ -188,6 +193,7 @@ fn bind_port(port: u16, addr: IpAddr, fd: i32) -> Result<u16> {
     } else {
         // check if this port is already bound
         if inner.info.get(&port).is_some() {
+            error!("Port {port} already bound");
             return Err(Error::InvalidArg);
         }
         port

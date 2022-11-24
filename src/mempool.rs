@@ -1,21 +1,20 @@
 //! mempool wrapper
 
 use crate::{Error, Result};
-use dpdk_sys::{
-    rte_mempool, rte_mempool_avail_count, rte_mempool_create, rte_mempool_free, rte_mempool_get,
-    rte_mempool_get_bulk, rte_mempool_in_use_count, rte_mempool_lookup, rte_mempool_put_bulk,
-    RTE_MEMPOOL_F_NO_CACHE_ALIGN, RTE_MEMPOOL_F_NO_IOVA_CONTIG, RTE_MEMPOOL_F_NO_SPREAD,
-    RTE_MEMPOOL_F_SC_GET, RTE_MEMPOOL_F_SP_PUT,
-};
+#[allow(clippy::wildcard_imports)] // too many of them
+use dpdk_sys::*;
 use lazy_static::lazy_static;
-use std::collections::HashMap;
-use std::ffi::CString;
-use std::fmt::Debug;
-use std::mem::MaybeUninit;
-use std::os::raw::c_void;
-use std::ptr::{self, NonNull};
-use std::sync::Mutex;
-use std::sync::{Arc, Weak};
+use log::trace;
+use std::{
+    collections::HashMap,
+    ffi::CString,
+    fmt::Debug,
+    mem::MaybeUninit,
+    os::raw::c_void,
+    ptr::{self, NonNull},
+    sync::Mutex,
+    sync::{Arc, Weak},
+};
 
 lazy_static! {
     pub(crate) static ref MEMPOOLS: Mutex<HashMap<usize, Weak<MempoolInner>>> = Mutex::default();
@@ -224,6 +223,7 @@ impl MempoolInner {
                 flags,
             )
         };
+        trace!("A mempool with {n} elements of {elt_size} created");
         Self::new(ptr)
     }
 

@@ -6,68 +6,69 @@ use std::os::raw::c_int;
 pub type Result<T> = std::result::Result<T, Error>;
 
 #[allow(missing_docs, clippy::missing_docs_in_private_items)]
-#[repr(i32)]
 #[non_exhaustive]
 #[derive(Copy, Clone, Debug, thiserror::Error)]
 pub enum Error {
     #[error("Operation not permitted")]
-    NoPerm = -libc::EPERM,
+    NoPerm,
     #[error("No such file or directory")]
-    NoEntry = -libc::ENOENT,
+    NoEntry,
     #[error("No such process")]
-    NoProc = -libc::ESRCH,
+    NoProc,
     #[error("Interrupted system call")]
-    Interrupted = -libc::EINTR,
+    Interrupted,
     #[error("Input/output error")]
-    IoErr = -libc::EIO,
+    IoErr,
     #[error("Device not configured")]
-    NotConfigured = -libc::ENXIO,
+    NotConfigured,
     #[error("Argument list too long")]
-    TooBig = -libc::E2BIG,
+    TooBig,
     #[error("Exec format error")]
-    NoExec = -libc::ENOEXEC,
+    NoExec,
     #[error("Bad fd")]
-    BadFd = -libc::EBADF,
+    BadFd,
     #[error("Resource temporarily unavailable")]
-    TempUnavail = -libc::EAGAIN,
+    TempUnavail,
     #[error("Cannot allocate memory")]
-    NoMem = -libc::ENOMEM,
+    NoMem,
     #[error("Permission denied")]
-    NoAccess = -libc::EACCES,
+    NoAccess,
     #[error("Bad address")]
-    BadAddress = -libc::EFAULT,
+    BadAddress,
     #[error("Device or resource busy")]
-    Busy = -libc::EBUSY,
+    Busy,
     #[error("File exists")]
-    Exists = -libc::EEXIST,
+    Exists,
     #[error("Invalid cross device link")]
-    CrossDev = -libc::EXDEV,
+    CrossDev,
     #[error("No such device")]
-    NoDev = -libc::ENODEV,
+    NoDev,
     #[error("Invalid argument")]
-    InvalidArg = -libc::EINVAL,
+    InvalidArg,
     #[error("No space left on device")]
-    NoSpace = -libc::ENOSPC,
+    NoSpace,
     #[error("Broken pipe")]
-    BrokenPipe = -libc::EPIPE,
+    BrokenPipe,
     #[error("Numerical result out of range")]
-    OutOfRange = -libc::ERANGE,
+    OutOfRange,
     #[error("Value too large for defined data type")]
-    Overflow = -libc::EOVERFLOW,
+    Overflow,
     #[error("Not supported")]
-    NotSupported = -libc::ENOTSUP,
+    NotSupported,
     #[error("Operation already in progress")]
-    Already = -libc::EALREADY,
+    Already,
     #[error("No buffer space available")]
-    NoBuf = -libc::ENOBUFS,
+    NoBuf,
     #[error("Operation not allowed in secondary processes")]
-    Secondary = -1001, // RTE defined
+    Secondary, // RTE defined
     #[error("Missing rte_config")]
-    NoConfig = -1002, // RTE defined
+    NoConfig, // RTE defined
     #[error("Unknown error")]
-    Unknown = -1003,
+    Unknown,
     #[error("Lock poisoned")]
-    Poisoned = -1004,
+    Poisoned,
+    #[error("Needed resource not started")]
+    NotStart,
 }
 
 #[allow(missing_docs, clippy::missing_docs_in_private_items)]
@@ -135,7 +136,6 @@ impl From<i32> for Error {
             libc::ENOBUFS => Error::NoBuf,
             1001 => Error::Secondary,
             1002 => Error::NoConfig,
-            1004 => Error::Poisoned,
             e if e > 0 => Error::Unknown,
             _ => unreachable!("errno = {}", errno), // negative number
         }
