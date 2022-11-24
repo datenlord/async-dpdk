@@ -16,6 +16,7 @@ use tokio::{
 
 use crate::mbuf::Mbuf;
 use crate::proto::{L3Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP};
+use crate::socket::{self, RecvResult};
 use crate::udp::handle_ipv4_udp;
 use crate::{Error, Result};
 
@@ -203,7 +204,11 @@ fn parse_ether(m: &Mbuf) -> Option<(u32, u8)> {
 /// Handle L2 frame.
 #[inline]
 #[allow(unsafe_code)]
-fn handle_ether(mut m: Mbuf, tbl: &mut IpFragmentTable, dr: &mut IpFragDeathRow) {
+fn handle_ether(
+    mut m: Mbuf,
+    tbl: &mut IpFragmentTable,
+    dr: &mut IpFragDeathRow,
+) -> Option<(i32, RecvResult)> {
     // l3 protocol, l4 protocol
     if let Some((ether_type, proto_id)) = parse_ether(&m) {
         #[allow(clippy::unwrap_used)]
@@ -212,7 +217,7 @@ fn handle_ether(mut m: Mbuf, tbl: &mut IpFragmentTable, dr: &mut IpFragDeathRow)
             RTE_ETHER_TYPE_IPV4 => {
                 let ptr = m.data_slice_mut().as_mut_ptr();
                 // SAFETY: ffi
-                let new_m = if unsafe { rte_ipv4_frag_pkt_is_fragmented(ptr.cast()) } == 0 {
+                let m = if unsafe { rte_ipv4_frag_pkt_is_fragmented(ptr.cast()) } == 0 {
                     Some(m)
                 } else {
                     // SAFETY: ffi
@@ -239,22 +244,18 @@ fn handle_ether(mut m: Mbuf, tbl: &mut IpFragmentTable, dr: &mut IpFragDeathRow)
                     } else {
                         Some(m)
                     }
-                };
-                if new_m.is_none() {
-                    return;
-                }
-                #[allow(clippy::shadow_unrelated, clippy::unwrap_used)] // they're related
-                let m = new_m.unwrap();
+                }?;
                 #[allow(clippy::single_match)] // more protocols
-                match proto_id {
+                return match proto_id {
                     IP_NEXT_PROTO_UDP => handle_ipv4_udp(m),
-                    _ => {}
-                }
+                    _ => None,
+                };
             }
             RTE_ETHER_TYPE_IPV6 | RTE_ETHER_TYPE_ARP => {}
             ether_type => eprintln!("Unsupported ether type {ether_type:x}"),
         }
     }
+    None
 }
 
 #[allow(unsafe_code)]
@@ -286,7 +287,10 @@ impl RxAgent {
                     for ptr in ptrs.into_iter().take(n as _) {
                         #[allow(clippy::unwrap_used)]
                         let m = Mbuf::new_with_ptr(ptr).unwrap();
-                        handle_ether(m, &mut frag_tbl, &mut death_row);
+                        if let Some((sockfd, res)) = handle_ether(m, &mut frag_tbl, &mut death_row)
+                        {
+                            socket::put_mailbox(sockfd, res);
+                        }
                     }
                 }
             }

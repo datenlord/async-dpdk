@@ -66,6 +66,8 @@ pub enum Error {
     NoConfig = -1002, // RTE defined
     #[error("Unknown error")]
     Unknown = -1003,
+    #[error("Lock poisoned")]
+    Poisoned = -1004,
 }
 
 #[allow(missing_docs, clippy::missing_docs_in_private_items)]
@@ -133,6 +135,7 @@ impl From<i32> for Error {
             libc::ENOBUFS => Error::NoBuf,
             1001 => Error::Secondary,
             1002 => Error::NoConfig,
+            1004 => Error::Poisoned,
             e if e > 0 => Error::Unknown,
             _ => unreachable!("errno = {}", errno), // negative number
         }

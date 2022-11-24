@@ -100,22 +100,25 @@ impl Default for MailboxTable {
     }
 }
 
+/// The result for trying to receive a packet.
+pub(crate) type RecvResult = Result<(SocketAddr, Packet)>;
+
 /// Mailbox is used for packet passing by agents and sockets.
 #[derive(Debug, Default)]
 pub(crate) struct Mailbox {
     /// Received packets.
-    received: VecDeque<(SocketAddr, Packet)>,
+    received: VecDeque<RecvResult>,
     /// Registered by sockets.
-    watcher: Option<oneshot::Sender<(SocketAddr, Packet)>>,
+    watcher: Option<oneshot::Sender<RecvResult>>,
 }
 
 impl Mailbox {
     /// Extract a packet from mailbox.
-    pub(crate) fn recv(&mut self) -> oneshot::Receiver<(SocketAddr, Packet)> {
+    pub(crate) fn recv(&mut self) -> oneshot::Receiver<RecvResult> {
         let (tx, rx) = oneshot::channel();
-        if let Some((addr, data)) = self.received.pop_front() {
-            #[allow(clippy::unwrap_used)]
-            tx.send((addr, data)).unwrap();
+        if let Some(res) = self.received.pop_front() {
+            #[allow(clippy::unwrap_used)] // rx is impossible to be dropped.
+            tx.send(res).unwrap();
         } else {
             self.watcher = Some(tx);
         }
@@ -123,12 +126,12 @@ impl Mailbox {
     }
 
     /// Put a packet into mailbox.
-    pub(crate) fn put(&mut self, addr: SocketAddr, data: Packet) {
+    pub(crate) fn put(&mut self, res: RecvResult) {
         if let Some(tx) = self.watcher.take() {
             #[allow(clippy::unwrap_used)]
-            tx.send((addr, data)).unwrap();
+            tx.send(res).unwrap();
         } else {
-            self.received.push_back((addr, data));
+            self.received.push_back(res);
         }
     }
 }
@@ -228,10 +231,10 @@ pub(crate) fn dealloc_mailbox(sockfd: i32) {
 }
 
 /// Called by the agent thread, put arrived packets into mailbox.
-pub(crate) fn put_mailbox(sockfd: i32, addr: SocketAddr, data: Packet) {
+pub(crate) fn put_mailbox(sockfd: i32, res: RecvResult) {
     #[allow(clippy::unwrap_used)]
     if let Some(mailbox) = MAILBOX_TABLE.inner.lock().unwrap().get(&sockfd) {
         #[allow(clippy::unwrap_used)]
-        mailbox.lock().unwrap().put(addr, data);
+        mailbox.lock().unwrap().put(res);
     }
 }

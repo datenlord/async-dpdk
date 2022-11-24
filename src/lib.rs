@@ -106,10 +106,8 @@
     clippy::verbose_file_reads,
     clippy::wildcard_enum_match_arm,
 )]
-#![allow(
-    clippy::missing_errors_doc,
-    clippy::missing_panics_doc,
-)]
+// TODO add docs
+#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
 #![feature(stmt_expr_attributes)]
 
 pub use dpdk_sys::{eth_foreach_dev, lcore_foreach, lcore_foreach_worker};

@@ -6,7 +6,7 @@ use crate::{
     net_dev,
     packet::Packet,
     proto::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP},
-    socket::{self, addr_2_sockfd, Mailbox, IPID},
+    socket::{self, addr_2_sockfd, Mailbox, RecvResult, IPID},
     Error, Result,
 };
 use bytes::{Buf, BufMut, BytesMut};
@@ -15,7 +15,6 @@ use dpdk_sys::{
 };
 use std::{
     fmt::Debug,
-    mem,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
     sync::{atomic::Ordering, Arc, Mutex},
 };
@@ -78,10 +77,10 @@ impl UdpSocket {
     /// the number of bytes read and the origin.
     #[inline]
     pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
-        #[allow(clippy::unwrap_used)]
-        let rx = self.mailbox.lock().unwrap().recv();
-        #[allow(clippy::unwrap_used)]
-        let (addr, data) = rx.await.unwrap();
+        #[allow(clippy::map_err_ignore)]
+        let rx = self.mailbox.lock().map_err(|_| Error::Poisoned)?.recv();
+        #[allow(clippy::map_err_ignore)]
+        let (addr, data) = rx.await.map_err(|_| Error::BrokenPipe)??;
         let mut len: usize = 0;
         let mut buf = buf;
         for frag in data.frags {
@@ -221,7 +220,7 @@ impl Drop for UdpSocket {
 
 /// Handle IPv4 packet.
 #[allow(unsafe_code)]
-pub(crate) fn handle_ipv4_udp(mut m: Mbuf) {
+pub(crate) fn handle_ipv4_udp(mut m: Mbuf) -> Option<(i32, RecvResult)> {
     // Parse IPv4 and UDP header.
     let data = m.data_slice();
 
@@ -233,8 +232,8 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) {
     let src_ip = IpAddr::from(src_ip_bytes);
 
     #[allow(clippy::integer_arithmetic)] // the result < usize::MAX
-    if data.len() < mem::size_of::<rte_ipv4_hdr>() + mem::size_of::<rte_udp_hdr>() {
-        return;
+    if data.len() < (L3Protocol::Ipv4.length() + L4Protocol::UDP.length()) as usize {
+        return None;
     }
 
     // SAFETY: remain size larger than `rte_udp_hdr` size
@@ -252,8 +251,8 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) {
     let packet = Packet::from_mbuf(m);
 
     if let Some(sockfd) = addr_2_sockfd(dst_port, dst_ip) {
-        socket::put_mailbox(sockfd, src_addr, packet);
-    } else {
-        eprintln!("sockfd not found: {dst_ip:?}:{dst_port}");
+        return Some((sockfd, Ok((src_addr, packet))));
     }
+    eprintln!("sockfd not found: {dst_ip:?}:{dst_port}");
+    None
 }
