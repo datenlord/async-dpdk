@@ -188,10 +188,9 @@ impl MempoolInner {
     pub(crate) fn new(ptr: *mut rte_mempool) -> Result<Arc<Self>> {
         let mp = NonNull::new(ptr).ok_or(Error::NoMem)?;
         let mp = Arc::new(Self { mp });
-        #[allow(clippy::unwrap_used)]
         let _prev = MEMPOOLS
             .lock()
-            .unwrap()
+            .map_err(Error::from)?
             .insert(ptr as usize, Arc::downgrade(&mp));
         Ok(mp)
     }
@@ -236,13 +235,12 @@ impl MempoolInner {
         if ptr.is_null() {
             return Err(Error::from_errno());
         }
-        #[allow(clippy::unwrap_used)]
-        MEMPOOLS
-            .lock()
-            .unwrap()
-            .get(&(ptr as usize))
-            .map(|weak| weak.upgrade().unwrap())
-            .ok_or(Error::Unknown)
+
+        if let Some(weak) = MEMPOOLS.lock().map_err(Error::from)?.get(&(ptr as usize)) {
+            Ok(weak.upgrade().ok_or(Error::NotExist)?)
+        } else {
+            Err(Error::NotExist)
+        }
     }
 
     /// Put an object to the mempool.

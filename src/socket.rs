@@ -115,35 +115,35 @@ pub(crate) struct Mailbox {
 
 impl Mailbox {
     /// Extract a packet from mailbox.
-    pub(crate) fn recv(&mut self) -> oneshot::Receiver<RecvResult> {
+    pub(crate) fn recv(&mut self) -> Result<oneshot::Receiver<RecvResult>> {
         let (tx, rx) = oneshot::channel();
         if let Some(res) = self.received.pop_front() {
             trace!("Got a packet from recv buffer");
-            #[allow(clippy::unwrap_used)] // rx is impossible to be dropped.
-            tx.send(res).unwrap();
+            #[allow(clippy::map_err_ignore)]
+            tx.send(res).map_err(|_| Error::BrokenPipe)?;
         } else {
             trace!("Registered a channel");
             self.watcher = Some(tx);
         }
-        rx
+        Ok(rx)
     }
 
     /// Put a packet into mailbox.
-    pub(crate) fn put(&mut self, res: RecvResult) {
+    pub(crate) fn put(&mut self, res: RecvResult) -> Result<()> {
         trace!("{:?} received a packet", self);
         if let Some(tx) = self.watcher.take() {
-            #[allow(clippy::unwrap_used)]
-            tx.send(res).unwrap();
+            #[allow(clippy::map_err_ignore)]
+            tx.send(res).map_err(|_| Error::BrokenPipe)?;
         } else {
             self.received.push_back(res);
         }
+        Ok(())
     }
 }
 
 /// Bind sockfd to a (ip, port) pair.
 pub(crate) fn bind_fd(addr: SocketAddr) -> Result<(i32, u16)> {
-    #[allow(clippy::unwrap_used)]
-    let mut inner = SOCK_TABLE.inner.lock().unwrap();
+    let mut inner = SOCK_TABLE.inner.lock().map_err(Error::from)?;
     let fd = inner.free_fd.pop_front().ok_or(Error::NoBuf)?;
     let port = bind_port(addr.port(), addr.ip(), fd)?;
     #[allow(clippy::cast_sign_loss)] // according to libc
@@ -156,8 +156,7 @@ pub(crate) fn free_fd(fd: i32) -> Result<()> {
     if fd < 0 {
         return Err(Error::BadFd);
     }
-    #[allow(clippy::unwrap_used)]
-    let mut inner = SOCK_TABLE.inner.lock().unwrap();
+    let mut inner = SOCK_TABLE.inner.lock().map_err(Error::from)?;
     #[allow(clippy::cast_sign_loss)] // according to libc
     let state = *inner.open.get(fd as usize).ok_or(Error::OutOfRange)?;
     let port = match state {
@@ -167,14 +166,12 @@ pub(crate) fn free_fd(fd: i32) -> Result<()> {
     #[allow(clippy::cast_sign_loss)] // according to libc
     *inner.open.get_mut(fd as usize).ok_or(Error::OutOfRange)? = SockState::Unused;
     inner.free_fd.push_front(fd);
-    free_port(port);
-    Ok(())
+    free_port(port)
 }
 
 /// Bind sockfd to a port, and return the port number.
 fn bind_port(port: u16, addr: IpAddr, fd: i32) -> Result<u16> {
-    #[allow(clippy::unwrap_used)]
-    let mut inner = PORT_TABLE.inner.lock().unwrap();
+    let mut inner = PORT_TABLE.inner.lock().map_err(Error::from)?;
     #[allow(clippy::integer_arithmetic)] // impossible to underflow
     if inner.info.len() == u16::MAX as usize - 1 {
         error!("Socket number exceeds");
@@ -204,43 +201,55 @@ fn bind_port(port: u16, addr: IpAddr, fd: i32) -> Result<u16> {
 }
 
 /// Find a free port.
-fn free_port(port: u16) {
-    #[allow(clippy::unwrap_used)]
-    let _prev = PORT_TABLE.inner.lock().unwrap().info.remove(&port);
+fn free_port(port: u16) -> Result<()> {
+    let _prev = PORT_TABLE
+        .inner
+        .lock()
+        .map_err(Error::from)?
+        .info
+        .remove(&port);
+    Ok(())
 }
 
 /// Called by agent thread, find sockfd by (ip, port).
 pub(crate) fn addr_2_sockfd(dst_port: u16, dst_ip: IpAddr) -> Option<i32> {
-    #[allow(clippy::unwrap_used)]
-    let inner = PORT_TABLE.inner.lock().unwrap();
+    let inner = PORT_TABLE.inner.lock().ok()?;
     inner
         .info
         .get(&dst_port)
         .and_then(|&PortInfo { ip, fd }| (ip.is_unspecified() || ip == dst_ip).then(|| fd))
 }
 /// Called by socket, create mailbox on creation.
-pub(crate) fn alloc_mailbox(sockfd: i32) -> Arc<Mutex<Mailbox>> {
+pub(crate) fn alloc_mailbox(sockfd: i32) -> Result<Arc<Mutex<Mailbox>>> {
     let mailbox = Arc::new(Mutex::new(Mailbox::default()));
-    #[allow(clippy::unwrap_used)]
     let _prev = MAILBOX_TABLE
         .inner
         .lock()
-        .unwrap()
+        .map_err(Error::from)?
         .insert(sockfd, Arc::clone(&mailbox));
-    mailbox
+    Ok(mailbox)
 }
 
 /// Called by socket, destroy mailbox on deletion.
-pub(crate) fn dealloc_mailbox(sockfd: i32) {
-    #[allow(clippy::unwrap_used)]
-    let _prev = MAILBOX_TABLE.inner.lock().unwrap().remove(&sockfd);
+pub(crate) fn dealloc_mailbox(sockfd: i32) -> Result<()> {
+    let _prev = MAILBOX_TABLE
+        .inner
+        .lock()
+        .map_err(Error::from)?
+        .remove(&sockfd);
+    Ok(())
 }
 
 /// Called by the agent thread, put arrived packets into mailbox.
-pub(crate) fn put_mailbox(sockfd: i32, res: RecvResult) {
-    #[allow(clippy::unwrap_used)]
-    if let Some(mailbox) = MAILBOX_TABLE.inner.lock().unwrap().get(&sockfd) {
-        #[allow(clippy::unwrap_used)]
-        mailbox.lock().unwrap().put(res);
+pub(crate) fn put_mailbox(sockfd: i32, res: RecvResult) -> Result<()> {
+    if let Some(mailbox) = MAILBOX_TABLE
+        .inner
+        .lock()
+        .map_err(Error::from)?
+        .get(&sockfd)
+    {
+        mailbox.lock().map_err(Error::from)?.put(res)?;
+        return Ok(());
     }
+    Err(Error::BadFd)
 }

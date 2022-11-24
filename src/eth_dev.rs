@@ -178,10 +178,9 @@ impl EthDev {
         let tx_agent = self.tx_agent.take().ok_or(Error::BrokenPipe)?;
 
         #[allow(clippy::cast_possible_truncation)] // self.tx_queue.len() checked
-        self.tx_queue
-            .iter()
-            .enumerate()
-            .for_each(|(queue_id, _)| tx_agent.unregister(self.port_id, queue_id as _));
+        for (queue_id, _) in self.tx_queue.iter().enumerate() {
+            tx_agent.unregister(self.port_id, queue_id as _)?;
+        }
 
         #[allow(clippy::cast_possible_truncation)] // self.rx_queue.len() checked
         for (queue_id, _) in self.rx_queue.iter().enumerate() {

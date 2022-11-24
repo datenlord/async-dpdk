@@ -279,8 +279,7 @@ impl RxAgent {
             let mut death_row = IpFragDeathRow::new(socket_id)?;
             // TODO error handling
             while that.running.load(Ordering::Acquire) {
-                #[allow(clippy::map_err_ignore)]
-                let tasks = that.tasks.lock().map_err(|_| Error::Poisoned)?;
+                let tasks = that.tasks.lock().map_err(Error::from)?;
                 let task_iter = tasks.iter();
                 for &(port_id, queue_id) in task_iter {
                     let mut ptrs = vec![ptr::null_mut(); MAX_PKT_BURST as usize];
@@ -293,7 +292,7 @@ impl RxAgent {
                         let m = Mbuf::new_with_ptr(ptr)?;
                         if let Some((sockfd, res)) = handle_ether(m, &mut frag_tbl, &mut death_row)
                         {
-                            socket::put_mailbox(sockfd, res);
+                            let _res = socket::put_mailbox(sockfd, res);
                         }
                     }
                 }
@@ -311,22 +310,20 @@ impl RxAgent {
 
     /// Register a (`port_id`, `queue_id`) to an `RxAgent`.
     pub(crate) fn register(self: &Arc<Self>, port_id: u16, queue_id: u16) -> Result<()> {
-        #[allow(clippy::map_err_ignore)]
         let _ = self
             .tasks
             .lock()
-            .map_err(|_| Error::Poisoned)?
+            .map_err(Error::from)?
             .insert((port_id, queue_id));
         Ok(())
     }
 
     /// Unregister a (`port_id`, `queue_id`) from an `RxAgent`.
     pub(crate) fn unregister(self: &Arc<Self>, port_id: u16, queue_id: u16) -> Result<()> {
-        #[allow(clippy::map_err_ignore)]
         let _ = self
             .tasks
             .lock()
-            .map_err(|_| Error::Poisoned)?
+            .map_err(Error::from)?
             .remove(&(port_id, queue_id));
         Ok(())
     }
@@ -356,28 +353,31 @@ impl TxAgent {
         queue_id: u16,
     ) -> Result<mpsc::Sender<Mbuf>> {
         let (tx, mut rx) = mpsc::channel::<Mbuf>(TX_CHAN_SIZE);
-        #[allow(clippy::unwrap_used)]
         let handle = self.rt.as_ref().ok_or(Error::NotStart)?.spawn(async move {
             let mut txbuf = TxBuffer::new(port_id, queue_id);
             while let Some(m) = rx.recv().await {
                 let _res = txbuf.buffer(m); // TODO buffer could be full, should notify the caller.
             }
         });
-        #[allow(clippy::map_err_ignore)]
         let _prev = self
             .tasks
             .lock()
-            .map_err(|_| Error::Poisoned)?
+            .map_err(Error::from)?
             .insert((port_id, queue_id), handle); // XXX
         Ok(tx)
     }
 
     /// Unregister a (`port_id`, `queue_id`) from a `TxAgent`.
-    pub(crate) fn unregister(self: &Arc<Self>, port_id: u16, queue_id: u16) {
-        #[allow(clippy::unwrap_used)]
-        if let Some(handle) = self.tasks.lock().unwrap().remove(&(port_id, queue_id)) {
+    pub(crate) fn unregister(self: &Arc<Self>, port_id: u16, queue_id: u16) -> Result<()> {
+        if let Some(handle) = self
+            .tasks
+            .lock()
+            .map_err(Error::from)?
+            .remove(&(port_id, queue_id))
+        {
             handle.abort();
         }
+        Ok(())
     }
 }
 

@@ -1,6 +1,7 @@
 //! DPDK defined error numbers.
 use dpdk_sys::{errno, rte_exit, rte_strerror};
-use std::os::raw::c_int;
+use std::{os::raw::c_int, sync::PoisonError};
+use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 
 /// async-dpdk defined Result.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -69,6 +70,8 @@ pub enum Error {
     Poisoned,
     #[error("Needed resource not started")]
     NotStart,
+    #[error("Not exist")]
+    NotExist,
 }
 
 #[allow(missing_docs, clippy::missing_docs_in_private_items)]
@@ -139,5 +142,26 @@ impl From<i32> for Error {
             e if e > 0 => Error::Unknown,
             _ => unreachable!("errno = {}", errno), // negative number
         }
+    }
+}
+
+impl<T> From<PoisonError<T>> for Error {
+    #[inline]
+    fn from(_error: PoisonError<T>) -> Self {
+        Error::Poisoned
+    }
+}
+
+impl<T> From<SendError<T>> for Error {
+    #[inline]
+    fn from(_error: SendError<T>) -> Self {
+        Error::BrokenPipe
+    }
+}
+
+impl From<RecvError> for Error {
+    #[inline]
+    fn from(_error: RecvError) -> Self {
+        Error::BrokenPipe
     }
 }

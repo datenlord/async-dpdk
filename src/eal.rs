@@ -73,7 +73,8 @@ impl Drop for Eal {
     #[inline]
     fn drop(&mut self) {
         // Close all devices
-        net_dev::device_close();
+        #[allow(clippy::unwrap_used)] // used in drop
+        net_dev::device_close().unwrap();
         // SAFETY: ffi
         #[allow(unsafe_code)]
         let errno = unsafe { rte_eal_cleanup() };
@@ -241,8 +242,7 @@ impl Config {
     #[inline]
     #[allow(clippy::unwrap_in_result)]
     pub fn enter(self) -> Result<()> {
-        #[allow(clippy::unwrap_used)]
-        if CONTEXT.read().unwrap().is_some() {
+        if CONTEXT.read().map_err(Error::from)?.is_some() {
             return Err(Error::Already);
         }
         let mut pargs = self
@@ -266,8 +266,7 @@ impl Config {
             return Err(Error::from_errno());
         }
         let context = Arc::new(Eal {});
-        #[allow(clippy::unwrap_used)]
-        *CONTEXT.write().unwrap() = Some(context);
+        *CONTEXT.write().map_err(Error::from)? = Some(context);
         net_dev::device_probe(self.addrs)?;
         Ok(())
     }

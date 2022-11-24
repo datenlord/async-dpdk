@@ -52,7 +52,7 @@ impl UdpSocket {
         {
             if let Ok((sockfd, port)) = socket::bind_fd(addr) {
                 if let Ok((tx, eth_addr)) = net_dev::find_dev_by_ip(addr.ip()) {
-                    let mailbox = socket::alloc_mailbox(sockfd);
+                    let mailbox = socket::alloc_mailbox(sockfd)?;
                     let ip = match addr.ip() {
                         IpAddr::V4(addr) => u32::from_ne_bytes(addr.octets()),
                         #[allow(clippy::todo)]
@@ -78,10 +78,9 @@ impl UdpSocket {
     /// the number of bytes read and the origin.
     #[inline]
     pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
+        let rx = self.mailbox.lock().map_err(Error::from)?.recv()?;
         #[allow(clippy::map_err_ignore)]
-        let rx = self.mailbox.lock().map_err(|_| Error::Poisoned)?.recv();
-        #[allow(clippy::map_err_ignore)]
-        let (addr, data) = rx.await.map_err(|_| Error::BrokenPipe)??;
+        let (addr, data) = rx.await.map_err(Error::from)??;
         let mut len: usize = 0;
         let mut buf = buf;
         for frag in data.frags {
@@ -213,8 +212,9 @@ impl Debug for UdpSocket {
 impl Drop for UdpSocket {
     #[inline]
     fn drop(&mut self) {
-        socket::dealloc_mailbox(self.sockfd);
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used)] // used in drop
+        socket::dealloc_mailbox(self.sockfd).unwrap();
+        #[allow(clippy::unwrap_used)] // used in drop
         socket::free_fd(self.sockfd).unwrap();
     }
 }
@@ -247,8 +247,7 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) -> Option<(i32, RecvResult)> {
 
     #[allow(clippy::integer_arithmetic)] // the result < usize::MAX
     let hdr_len = L3Protocol::Ipv4.length() + L4Protocol::UDP.length();
-    #[allow(clippy::unwrap_used)]
-    m.adj(hdr_len as _).unwrap();
+    m.adj(hdr_len as _).ok()?;
     let packet = Packet::from_mbuf(m);
 
     if let Some(sockfd) = addr_2_sockfd(dst_port, dst_ip) {

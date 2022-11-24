@@ -31,8 +31,7 @@ struct InetDevice {
 #[allow(unsafe_code)]
 #[allow(clippy::similar_names)] // tx and rx are DPDK terms
 pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
-    #[allow(clippy::unwrap_used)]
-    let mut inet_device = INET_DEVICE.write().unwrap();
+    let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
     if !inet_device.is_empty() {
         return Err(Error::Already);
     }
@@ -76,8 +75,7 @@ pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
 /// Start all probed devices.
 #[inline]
 pub fn device_start() -> Result<()> {
-    #[allow(clippy::unwrap_used)]
-    let mut inet_device = INET_DEVICE.write().unwrap();
+    let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
     let inet_iter = inet_device.iter_mut();
     for dev in inet_iter {
         dev.ethdev.start()?;
@@ -90,8 +88,7 @@ pub fn device_start() -> Result<()> {
 /// Stop all probed devices.
 #[inline]
 pub fn device_stop() -> Result<()> {
-    #[allow(clippy::unwrap_used)]
-    let mut inet_device = INET_DEVICE.write().unwrap();
+    let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
     let inet_iter = inet_device.iter_mut();
     for dev in inet_iter {
         dev.ethdev.stop()?;
@@ -102,16 +99,15 @@ pub fn device_stop() -> Result<()> {
 }
 
 /// Close all probed device.
-pub(crate) fn device_close() {
-    #[allow(clippy::unwrap_used)]
-    let mut inet_device = INET_DEVICE.write().unwrap();
+pub(crate) fn device_close() -> Result<()> {
+    let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
     inet_device.clear();
+    Ok(())
 }
 
 /// Get a device from an IP address.
 pub(crate) fn find_dev_by_ip(ip: IpAddr) -> Result<(TxSender, rte_ether_addr)> {
-    #[allow(clippy::unwrap_used)]
-    let inet_device = INET_DEVICE.read().unwrap();
+    let inet_device = INET_DEVICE.read().map_err(Error::from)?;
     let inet_iter = inet_device.iter();
     for dev in inet_iter {
         #[allow(clippy::else_if_without_else)] // continue if not matched
