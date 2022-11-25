@@ -124,7 +124,6 @@ pub enum LogLevel {
     Debug = 8,
 }
 
-#[allow(clippy::unwrap_used)] // Create `CString`s
 impl Config {
     /// Create a new eal builder.
     #[inline]
@@ -133,7 +132,8 @@ impl Config {
         let env_args = std::env::args().collect::<Vec<_>>();
         Self {
             args: vec![
-                #[allow(clippy::indexing_slicing)] // the first of env args is the program name
+                #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
+                // the first of env args is the program name
                 CString::new(env_args[0].as_str()).unwrap(),
             ],
             addrs: vec![],
@@ -142,17 +142,18 @@ impl Config {
 
     /// Probe devices or not.
     #[inline]
-    #[must_use]
-    pub fn device_probe(mut self, addr_str: &[&str]) -> Self {
+    pub fn device_probe(mut self, addr_str: &[&str]) -> Result<Self> {
         for addr in addr_str.iter() {
-            self.addrs.push(IpAddr::from_str(addr).unwrap());
+            self.addrs
+                .push(IpAddr::from_str(addr).map_err(Error::from)?);
         }
-        self
+        Ok(self)
     }
 
     /// Set core mask to EAL.
     #[inline]
     #[must_use]
+    #[allow(clippy::unwrap_used)] // impossible to panic
     pub fn coremask(mut self, mask: u64) -> Self {
         self.args.push(CString::new("-c").unwrap());
         self.args.push(CString::new(mask.to_string()).unwrap());
@@ -161,43 +162,41 @@ impl Config {
 
     /// Set core list to EAL.
     #[inline]
-    #[must_use]
-    pub fn corelist(mut self, list: &str) -> Self {
-        self.args.push(CString::new("-l").unwrap());
-        self.args.push(CString::new(list).unwrap());
-        self
+    pub fn corelist(mut self, list: &str) -> Result<Self> {
+        self.args.push(CString::new("-l").map_err(Error::from)?);
+        self.args.push(CString::new(list).map_err(Error::from)?);
+        Ok(self)
     }
 
     /// Set core map to EAL.
     #[inline]
-    #[must_use]
-    pub fn coremap(mut self, map: &str) -> Self {
-        self.args.push(CString::new("-lcores").unwrap());
-        self.args.push(CString::new(map).unwrap());
-        self
+    pub fn coremap(mut self, map: &str) -> Result<Self> {
+        self.args
+            .push(CString::new("-lcores").map_err(Error::from)?);
+        self.args.push(CString::new(map).map_err(Error::from)?);
+        Ok(self)
     }
 
     /// Set pci blacklist.
     #[inline]
-    #[must_use]
-    pub fn pci_blacklist(mut self, name: &str) -> Self {
-        self.args.push(CString::new("-b").unwrap());
-        self.args.push(CString::new(name).unwrap());
-        self
+    pub fn pci_blacklist(mut self, name: &str) -> Result<Self> {
+        self.args.push(CString::new("-b").map_err(Error::from)?);
+        self.args.push(CString::new(name).map_err(Error::from)?);
+        Ok(self)
     }
 
     /// Set pci whitelist.
     #[inline]
-    #[must_use]
-    pub fn pci_whitelist(mut self, name: &str) -> Self {
-        self.args.push(CString::new("-w").unwrap());
-        self.args.push(CString::new(name).unwrap());
-        self
+    pub fn pci_whitelist(mut self, name: &str) -> Result<Self> {
+        self.args.push(CString::new("-w").map_err(Error::from)?);
+        self.args.push(CString::new(name).map_err(Error::from)?);
+        Ok(self)
     }
 
     /// Disable PCI.
     #[inline]
     #[must_use]
+    #[allow(clippy::unwrap_used)] // impossible to panic
     pub fn no_pci(mut self, no_pci: bool) -> Self {
         if no_pci {
             self.args.push(CString::new("--no-pci").unwrap());
@@ -208,6 +207,7 @@ impl Config {
     /// Reserved memory on start in megabytes.
     #[inline]
     #[must_use]
+    #[allow(clippy::unwrap_used)] // impossible to panic
     pub fn memory_mb(mut self, size: u32) -> Self {
         self.args.push(CString::new("-m").unwrap());
         self.args.push(CString::new(size.to_string()).unwrap());
@@ -217,6 +217,7 @@ impl Config {
     /// Set iova mode.
     #[inline]
     #[must_use]
+    #[allow(clippy::unwrap_used)] // impossible to panic
     pub fn iova_mode(mut self, mode: IovaMode) -> Self {
         self.args.push(CString::new("--iova-mode").unwrap());
         match mode {
@@ -229,6 +230,7 @@ impl Config {
     /// Set log level
     #[inline]
     #[must_use]
+    #[allow(clippy::unwrap_used)] // impossible to panic
     pub fn log_level(mut self, log_level: LogLevel) -> Self {
         self.args.push(CString::new("--log-level").unwrap());
         self.args
@@ -240,7 +242,6 @@ impl Config {
     /// is to be executed on the MAIN lcore only, as soon as possible in the application's main()
     /// function. It puts the WORKER lcores in the WAIT state.
     #[inline]
-    #[allow(clippy::unwrap_in_result)]
     pub fn enter(self) -> Result<()> {
         if CONTEXT.read().map_err(Error::from)?.is_some() {
             return Err(Error::Already);

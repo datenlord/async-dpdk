@@ -33,6 +33,7 @@ async fn main() {
     eal::Config::new()
         // Assign IP addresses for two of the NICs.
         .device_probe(&["10.2.3.0", "10.2.3.1"])
+        .unwrap()
         .enter()
         .unwrap();
     // Let the devices start polling.

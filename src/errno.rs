@@ -1,6 +1,6 @@
 //! DPDK defined error numbers.
 use dpdk_sys::{errno, rte_exit, rte_strerror};
-use std::{os::raw::c_int, sync::PoisonError};
+use std::{ffi::NulError, net::AddrParseError, os::raw::c_int, sync::PoisonError};
 use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 
 /// async-dpdk defined Result.
@@ -77,7 +77,7 @@ pub enum Error {
 #[allow(missing_docs, clippy::missing_docs_in_private_items)]
 impl Error {
     #[inline]
-    #[allow(clippy::must_use_candidate)]
+    #[must_use]
     pub fn from_errno() -> Error {
         // SAFETY: read mutable static variable
         #[allow(unsafe_code)]
@@ -87,8 +87,7 @@ impl Error {
 
     #[inline]
     pub fn from_ret(errno: i32) -> Result<()> {
-        #[allow(clippy::integer_arithmetic)]
-        let errno = -errno;
+        let errno = errno.saturating_neg();
         match errno {
             e if e <= 0 => Ok(()),
             e => Err(e.into()),
@@ -163,5 +162,19 @@ impl From<RecvError> for Error {
     #[inline]
     fn from(_error: RecvError) -> Self {
         Error::BrokenPipe
+    }
+}
+
+impl From<NulError> for Error {
+    #[inline]
+    fn from(_error: NulError) -> Self {
+        Error::InvalidArg
+    }
+}
+
+impl From<AddrParseError> for Error {
+    #[inline]
+    fn from(_error: AddrParseError) -> Self {
+        Error::InvalidArg
     }
 }

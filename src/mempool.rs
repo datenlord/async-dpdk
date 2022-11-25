@@ -52,7 +52,6 @@ pub struct Mempool {
 impl Mempool {
     /// Create a new Mempool named `name` in memory.
     #[inline]
-    #[allow(clippy::unwrap_in_result)]
     pub fn create(
         name: &str,
         n: u32,
@@ -62,8 +61,7 @@ impl Mempool {
         socket_id: i32,
         flags: u32,
     ) -> Result<Self> {
-        #[allow(clippy::unwrap_used)]
-        let name = CString::new(name).unwrap();
+        let name = CString::new(name).map_err(Error::from)?;
         let inner = MempoolInner::create(
             &name,
             n,
@@ -78,10 +76,8 @@ impl Mempool {
 
     /// Search a mempool from its name.
     #[inline]
-    #[allow(clippy::unwrap_in_result)]
     pub fn lookup(name: &str) -> Result<Self> {
-        #[allow(clippy::unwrap_used)]
-        let name = CString::new(name).unwrap();
+        let name = CString::new(name).map_err(Error::from)?;
         let inner = MempoolInner::lookup(&name)?;
         Ok(Self { inner })
     }
@@ -228,7 +224,6 @@ impl MempoolInner {
 
     /// Lookup a `Mempool` with its name.
     #[inline]
-    #[allow(clippy::unwrap_in_result)]
     fn lookup(name: &CString) -> Result<Arc<Self>> {
         // SAFETY: ffi
         let ptr = unsafe { rte_mempool_lookup(name.as_ptr()) };

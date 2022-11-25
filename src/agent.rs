@@ -67,14 +67,16 @@ struct IpFragDeathRow {
 }
 
 #[allow(unsafe_code)]
-#[allow(clippy::missing_docs_in_private_items)]
 impl IpFragmentTable {
+    /// Create an `IpFragmentTable`.
     fn new(socket_id: i32) -> Result<Self> {
+        /// Millisecond per second.
         const MS_PER_S: u64 = 1000;
         // SAFETY: ffi
-        let max_cycles = #[allow(clippy::integer_arithmetic)]
-        unsafe {
-            (rte_get_tsc_hz() + MS_PER_S - 1) / MS_PER_S * MS_PER_S
+        let max_cycles = unsafe {
+            rte_get_tsc_hz()
+                .saturating_add(MS_PER_S.saturating_sub(1))
+                .saturating_div(MS_PER_S.saturating_pow(2))
         };
         // SAFETY: ffi
         let ptr = unsafe {
@@ -89,6 +91,7 @@ impl IpFragmentTable {
         let tbl = NonNull::new(ptr).ok_or(Error::NoMem)?;
         Ok(Self { tbl })
     }
+    /// Get *mut `rte_ip_frag_tbl`.
     fn as_mut_ptr(&mut self) -> *mut rte_ip_frag_tbl {
         self.tbl.as_ptr()
     }
@@ -103,8 +106,8 @@ impl Drop for IpFragmentTable {
 }
 
 #[allow(unsafe_code)]
-#[allow(clippy::missing_docs_in_private_items)]
 impl IpFragDeathRow {
+    /// Create a new `IpFragDeathRow`.
     fn new(socket_id: i32) -> Result<Self> {
         // SAFETY: ffi, check not null later.
         let ptr = unsafe {
@@ -119,6 +122,7 @@ impl IpFragDeathRow {
         let dr = NonNull::new(ptr).ok_or(Error::NoMem)?;
         Ok(Self { dr })
     }
+    /// Get *mut `rte_ip_frag_death_row`.
     fn as_mut_ptr(&mut self) -> *mut rte_ip_frag_death_row {
         self.dr.as_ptr()
     }
@@ -383,9 +387,9 @@ impl TxAgent {
 
 impl Drop for TxAgent {
     fn drop(&mut self) {
-        #[allow(clippy::unwrap_used)]
+        #[allow(clippy::unwrap_used)] // used in drop
         let rt = self.rt.take().unwrap();
-        #[allow(clippy::mem_forget)]
+        #[allow(clippy::mem_forget)] // not allowed to destroy a `Runtime` inside another
         mem::forget(rt);
     }
 }

@@ -79,7 +79,6 @@ impl UdpSocket {
     #[inline]
     pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
         let rx = self.mailbox.lock().map_err(Error::from)?.recv()?;
-        #[allow(clippy::map_err_ignore)]
         let (addr, data) = rx.await.map_err(Error::from)??;
         let mut len: usize = 0;
         let mut buf = buf;
@@ -232,8 +231,11 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) -> Option<(i32, RecvResult)> {
     let src_ip_bytes: [u8; 4] = ip_hdr.src_addr.to_ne_bytes();
     let src_ip = IpAddr::from(src_ip_bytes);
 
-    #[allow(clippy::integer_arithmetic)] // the result < usize::MAX
-    if data.len() < (L3Protocol::Ipv4.length() + L4Protocol::UDP.length()) as usize {
+    if data.len()
+        < L3Protocol::Ipv4
+            .length()
+            .saturating_add(L4Protocol::UDP.length()) as usize
+    {
         return None;
     }
 
@@ -245,8 +247,9 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) -> Option<(i32, RecvResult)> {
     let _len = udp_hdr.dgram_len.to_be();
     let src_addr = SocketAddr::new(src_ip, src_port);
 
-    #[allow(clippy::integer_arithmetic)] // the result < usize::MAX
-    let hdr_len = L3Protocol::Ipv4.length() + L4Protocol::UDP.length();
+    let hdr_len = L3Protocol::Ipv4
+        .length()
+        .saturating_add(L4Protocol::UDP.length());
     m.adj(hdr_len as _).ok()?;
     let packet = Packet::from_mbuf(m);
 

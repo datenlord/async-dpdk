@@ -110,7 +110,6 @@ pub(crate) fn find_dev_by_ip(ip: IpAddr) -> Result<(TxSender, rte_ether_addr)> {
     let inet_device = INET_DEVICE.read().map_err(Error::from)?;
     let inet_iter = inet_device.iter();
     for dev in inet_iter {
-        #[allow(clippy::else_if_without_else)] // continue if not matched
         if dev.ip == ip {
             if !dev.running {
                 error!("Device is not running!");
@@ -119,7 +118,8 @@ pub(crate) fn find_dev_by_ip(ip: IpAddr) -> Result<(TxSender, rte_ether_addr)> {
             let sender = dev.ethdev.sender(0).ok_or(Error::NoDev)?;
             let addr = dev.ethdev.mac_addr()?;
             return Ok((sender, addr));
-        } else if ip.is_unspecified() || ip.is_loopback() {
+        }
+        if ip.is_unspecified() || ip.is_loopback() {
             if !dev.running {
                 debug!("Device is not running, try the next one");
                 continue;

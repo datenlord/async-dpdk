@@ -22,18 +22,21 @@ const MAX_SOCK_NUM: i32 = 8192;
 
 /// Socket state.
 #[derive(Debug, Default, Copy, Clone)]
-#[allow(clippy::missing_docs_in_private_items)]
 pub(crate) enum SockState {
+    /// Unused port.
     #[default]
     Unused,
+    /// Bound port.
     InUse {
+        /// port number.
         port: u16,
     },
 }
 
+/// Socket table for this process, guarded by a mutex.
 #[derive(Debug)]
-#[allow(clippy::missing_docs_in_private_items)]
 struct SockTable {
+    /// inner `SockTableInner`
     inner: Mutex<SockTableInner>,
 }
 
@@ -45,8 +48,8 @@ impl Default for SockTable {
     }
 }
 
+/// The global socket state table.
 #[derive(Debug)]
-#[allow(clippy::missing_docs_in_private_items)]
 struct SockTableInner {
     /// fd -> SockState
     open: [SockState; MAX_SOCK_NUM as usize],
@@ -64,21 +67,24 @@ impl Default for SockTableInner {
     }
 }
 
+/// Port info for this process, guarded by a mutex.
 #[derive(Debug, Default)]
-#[allow(clippy::missing_docs_in_private_items)]
 struct PortTable {
+    /// inner `PortTableInner`
     inner: Mutex<PortTableInner>,
 }
 
+/// Info for bound ports.
 #[derive(Debug)]
-#[allow(clippy::missing_docs_in_private_items)]
 struct PortInfo {
+    /// Sockfd bound to this port.
     fd: i32,
+    /// `IpAddr` bound to this port.
     ip: IpAddr,
 }
 
+/// Global port info.
 #[derive(Debug, Default)]
-#[allow(clippy::missing_docs_in_private_items)]
 struct PortTableInner {
     /// port -> port info
     info: HashMap<u16, PortInfo>,
@@ -172,8 +178,7 @@ pub(crate) fn free_fd(fd: i32) -> Result<()> {
 /// Bind sockfd to a port, and return the port number.
 fn bind_port(port: u16, addr: IpAddr, fd: i32) -> Result<u16> {
     let mut inner = PORT_TABLE.inner.lock().map_err(Error::from)?;
-    #[allow(clippy::integer_arithmetic)] // impossible to underflow
-    if inner.info.len() == u16::MAX as usize - 1 {
+    if inner.info.len() == (u16::MAX as usize).saturating_sub(1) {
         error!("Socket number exceeds");
         return Err(Error::NoBuf);
     }

@@ -82,8 +82,13 @@ impl EthDev {
         }
 
         let nb_ports = EthDev::available_ports();
-        #[allow(clippy::integer_arithmetic)]
-        let n_elem = (nb_ports * (u32::from(n_rxd) + u32::from(n_txd) + 32)).max(8192);
+        let n_elem = nb_ports
+            .saturating_mul(
+                u32::from(n_rxd)
+                    .saturating_add(u32::from(n_txd))
+                    .saturating_add(32),
+            )
+            .max(8192);
 
         let mut tx_queue = vec![];
         let mut rx_queue = vec![];
@@ -305,8 +310,7 @@ impl TxSender {
     /// Send a request to `TxAgent`
     pub(crate) async fn send(&self, pkt: Packet) -> Result<()> {
         let m = pkt.into_mbuf(&self.tx_queue.mp)?;
-        #[allow(clippy::map_err_ignore)]
-        self.chan.send(m).await.map_err(|_| Error::BrokenPipe)
+        self.chan.send(m).await.map_err(Error::from)
     }
 }
 
