@@ -1,6 +1,6 @@
 //! A memory pool wrapper in safe Rust.
 
-use crate::{Error, Result};
+use crate::{mbuf::Mbuf, Error, Result};
 #[allow(clippy::wildcard_imports)] // too many of them
 use dpdk_sys::*;
 use lazy_static::lazy_static;
@@ -9,6 +9,7 @@ use std::{
     collections::HashMap,
     ffi::CString,
     fmt::Debug,
+    marker::PhantomData,
     os::raw::c_void,
     ptr::{self, NonNull},
     sync::Mutex,
@@ -39,22 +40,75 @@ pub const MEMPOOL_SINGLE_CONSUMER: u32 = RTE_MEMPOOL_F_SC_GET;
 /// If set, allocated objects won't necessarily be contiguous in IO memory.
 pub const MEMPOOL_NO_IOVA_CONTIG: u32 = RTE_MEMPOOL_F_NO_IOVA_CONTIG;
 
+/// DPDK allocated objects.
+#[allow(clippy::module_name_repetitions)]
+pub trait MempoolObj: Sized {
+    /// Convert to pointer.
+    fn into_raw(self) -> *mut c_void;
+
+    /// Convert to object.
+    fn from_raw(ptr: *mut c_void) -> Result<Self>;
+}
+
+/// DPDK mempool allocator.
+pub trait Mempool<T: MempoolObj>: Sized {
+    /// Create a new instance.
+    fn create(
+        name: &str,
+        size: u32,
+        item_size: u32,
+        cache_size: u32,
+        private_data_size: u32,
+        socket_id: i32,
+        flags: u32,
+    ) -> Result<Self>;
+
+    /// Get a mempool instance using name.
+    fn lookup(name: &str) -> Result<Self>;
+
+    /// Allocate an item from mempool.
+    fn get(&self) -> Result<T>;
+
+    /// Deallocate an item.
+    fn put(&self, item: T);
+
+    /// Available elements
+    fn available(&self) -> u32;
+
+    /// Elements in use.
+    fn in_use(&self) -> u32;
+
+    /// The mempool is empty.
+    fn is_empty(&self) -> bool;
+
+    /// The mempool is full.
+    fn is_full(&self) -> bool;
+}
+
 /// Mempool is an allocator for fixed sized object. In DPDK, it's identified by name and uses a
 /// mempool handler to store free objects. It provides some other optional services such as
 /// per-core object cache and an alignment helper.
+#[allow(clippy::module_name_repetitions)]
 #[derive(Debug)]
-pub struct Mempool {
+pub struct GenericMempool<T>
+where
+    T: Default + MempoolObj,
+{
     /// An `Arc` pointer to `MempoolInner`.
     inner: Arc<MempoolInner>,
+    /// Placeholder for generic data type.
+    _marker: PhantomData<T>,
 }
 
-impl Mempool {
-    /// Create a new Mempool named `name` in memory.
+impl<T> Mempool<T> for GenericMempool<T>
+where
+    T: Default + MempoolObj,
+{
     #[inline]
-    pub fn create(
+    fn create(
         name: &str,
-        n: u32,
-        elt_size: u32,
+        size: u32,
+        item_size: u32,
         cache_size: u32,
         private_data_size: u32,
         socket_id: i32,
@@ -63,83 +117,187 @@ impl Mempool {
         let name = CString::new(name).map_err(Error::from)?;
         let inner = MempoolInner::create(
             &name,
-            n,
-            elt_size,
+            size,
+            item_size,
             cache_size,
             private_data_size,
             socket_id,
             flags,
         )?;
-        Ok(Self { inner })
+        Ok(Self {
+            inner,
+            _marker: PhantomData,
+        })
     }
 
-    /// Search a mempool from its name.
     #[inline]
-    pub fn lookup(name: &str) -> Result<Self> {
+    fn lookup(name: &str) -> Result<Self> {
+        let name = CString::new(name).map_err(Error::from)?;
+        let inner = MempoolInner::lookup(&name)?;
+        Ok(Self {
+            inner,
+            _marker: PhantomData,
+        })
+    }
+
+    #[inline]
+    fn get(&self) -> Result<T> {
+        let ptr = self.inner.get::<T>()?;
+        // SAFETY: valid memory.
+        #[allow(unsafe_code)]
+        unsafe {
+            *ptr = T::default();
+            T::from_raw(ptr.cast())
+        }
+    }
+
+    #[inline]
+    fn put(&self, item: T) {
+        self.inner.put(item.into_raw());
+    }
+
+    #[must_use]
+    #[inline]
+    fn available(&self) -> u32 {
+        self.inner.avail_count()
+    }
+
+    #[must_use]
+    #[inline]
+    fn in_use(&self) -> u32 {
+        self.inner.in_use_count()
+    }
+    #[must_use]
+    #[inline]
+    fn is_empty(&self) -> bool {
+        self.inner.empty()
+    }
+
+    #[must_use]
+    #[inline]
+    fn is_full(&self) -> bool {
+        self.inner.full()
+    }
+}
+
+impl<T> GenericMempool<T>
+where
+    T: Default + MempoolObj,
+{
+    /// Get several objects from the mempool.
+    #[inline]
+    pub fn get_bulk(&self, n: u32) -> Result<Vec<Box<T>>> {
+        let vec = self.inner.get_bulk(n)?;
+        let vec = vec
+            .into_iter()
+            .map(|ptr| {
+                #[allow(unsafe_code)]
+                unsafe {
+                    *ptr = T::default();
+                    Box::from_raw(ptr)
+                }
+            })
+            .collect();
+        Ok(vec)
+    }
+
+    /// Put several objects back in the mempool.
+    #[inline]
+    pub fn put_bulk(&self, objs: Vec<T>, n: u32) {
+        let objs = objs.into_iter().map(MempoolObj::into_raw).collect();
+        self.inner.put_bulk(objs, n);
+    }
+}
+
+/// Packet mempool.
+#[allow(clippy::module_name_repetitions)]
+#[derive(Debug)]
+pub struct PktMempool {
+    /// Inner pointer.
+    inner: Arc<MempoolInner>,
+}
+
+impl Mempool<Mbuf> for PktMempool {
+    #[inline]
+    fn create(
+        name: &str,
+        size: u32,
+        _item_size: u32,
+        cache_size: u32,
+        private_data_size: u32,
+        socket_id: i32,
+        _flags: u32,
+    ) -> Result<Self> {
+        #[allow(unsafe_code)]
+        let ptr = #[allow(clippy::cast_possible_truncation)]
+        unsafe {
+            rte_pktmbuf_pool_create(
+                cstring!(name),
+                size,
+                cache_size,
+                private_data_size as u16,
+                RTE_MBUF_DEFAULT_BUF_SIZE as u16,
+                socket_id,
+            )
+        };
+        let inner = MempoolInner::new(ptr)?;
+        Ok(Self::new(inner))
+    }
+
+    #[inline]
+    fn lookup(name: &str) -> Result<Self> {
         let name = CString::new(name).map_err(Error::from)?;
         let inner = MempoolInner::lookup(&name)?;
         Ok(Self { inner })
     }
 
-    /// Get one object from the mempool.
     #[inline]
-    pub fn get<T: Default>(&self) -> Result<Box<T>> {
-        self.inner.get::<T>()
+    fn get(&self) -> Result<Mbuf> {
+        // SAFETY: ffi
+        #[allow(unsafe_code)]
+        let ptr = unsafe { rte_pktmbuf_alloc(self.as_ptr()) };
+        Mbuf::new_with_ptr(ptr)
     }
 
-    /// Put one object back in the mempool.
     #[inline]
-    pub fn put<T>(&self, obj: Box<T>) {
-        self.inner.put(obj);
+    fn put(&self, item: Mbuf) {
+        // SAFETY: ffi
+        #[allow(unsafe_code)]
+        unsafe {
+            rte_pktmbuf_free(item.as_ptr());
+        }
     }
 
-    /// Get several objects from the mempool.
     #[inline]
-    pub fn get_bulk<T: Default>(&self, n: u32) -> Result<Vec<Box<T>>> {
-        self.inner.get_bulk(n)
-    }
-
-    /// Put several objects back in the mempool.
-    #[inline]
-    pub fn put_bulk<T>(&self, objs: Vec<Box<T>>, n: u32) {
-        self.inner.put_bulk(objs, n);
-    }
-
-    /// Return the number of entries in the mempool. When cache is enabled, this function has to browse
-    /// the length of all lcores, so it should not be used in a data path, but only for debug purposes.
-    /// User-owned mempool caches are not accounted for.
-    #[must_use]
-    #[inline]
-    pub fn available(&self) -> u32 {
+    fn available(&self) -> u32 {
         self.inner.avail_count()
     }
 
-    /// Return the number of elements which have been allocated from the mempool.
-    #[must_use]
     #[inline]
-    pub fn in_use(&self) -> u32 {
+    fn in_use(&self) -> u32 {
         self.inner.in_use_count()
     }
-    /// Test if the mempool is empty.
-    #[must_use]
+
     #[inline]
-    pub fn is_empty(&self) -> bool {
+    fn is_empty(&self) -> bool {
         self.inner.empty()
     }
 
-    /// Test if the mempool is full.
-    #[must_use]
     #[inline]
-    pub fn is_full(&self) -> bool {
+    fn is_full(&self) -> bool {
         self.inner.full()
     }
+}
 
+impl PktMempool {
     /// Get a pointer to `rte_mempool`.
+    #[inline]
     pub(crate) fn as_ptr(&self) -> *mut rte_mempool {
         self.inner.as_ptr()
     }
 
     /// Get a new instance of `Mempool`.
+    #[inline]
     pub(crate) fn new(inner: Arc<MempoolInner>) -> Self {
         Self { inner }
     }
@@ -239,24 +397,23 @@ impl MempoolInner {
 
     /// Put an object to the mempool.
     #[inline]
-    fn put<T>(&self, obj: Box<T>) {
+    fn put<T>(&self, obj: *mut T) {
         self.put_bulk(vec![obj], 1);
     }
 
     /// Put several objects back to the mempool.
     #[inline]
-    fn put_bulk<T>(&self, objs: Vec<Box<T>>, n: u32) {
-        let mut obj_table = objs.into_iter().map(Box::into_raw).collect::<Vec<_>>();
+    fn put_bulk<T>(&self, mut objs: Vec<*mut T>, n: u32) {
         // SAFETY: ffi
         #[allow(unsafe_code)]
         unsafe {
-            rte_mempool_put_bulk(self.mp.as_ptr(), obj_table.as_mut_ptr().cast(), n);
+            rte_mempool_put_bulk(self.mp.as_ptr(), objs.as_mut_ptr().cast(), n);
         }
     }
 
     /// Get an object from the mempool.
     #[inline]
-    fn get<T: Default>(&self) -> Result<Box<T>> {
+    fn get<T>(&self) -> Result<*mut T> {
         let mut ptr = ptr::null_mut::<T>();
         // SAFETY: ffi
         let errno = #[allow(trivial_casts)]
@@ -267,29 +424,18 @@ impl MempoolInner {
             )
         };
         Error::from_ret(errno)?;
-        // SAFETY: ptr is valid
-        unsafe {
-            *ptr = T::default();
-        }
-        // SAFETY: objs are initialized since no error reported
-        unsafe { Ok(Box::from_raw(ptr)) }
+        Ok(ptr)
     }
 
     /// Get a bulk of objects.
     #[inline]
-    fn get_bulk<T: Default>(&self, n: u32) -> Result<Vec<Box<T>>> {
+    fn get_bulk<T>(&self, n: u32) -> Result<Vec<*mut T>> {
         let mut ptrs = (0..n).map(|_| ptr::null_mut::<T>()).collect::<Vec<_>>();
         // SAFETY: ffi
         let errno = unsafe { rte_mempool_get_bulk(self.mp.as_ptr(), ptrs.as_mut_ptr().cast(), n) };
         Error::from_ret(errno)?;
         // SAFETY: objs are initialized in `rte_mempool_get_bulk`
-        Ok(ptrs
-            .into_iter()
-            .map(|ptr| unsafe { 
-                *ptr = T::default();
-                Box::from_raw(ptr)
-            })
-            .collect())
+        Ok(ptrs)
     }
 
     /// The number of available objects.
@@ -327,14 +473,38 @@ impl MempoolInner {
 
 #[cfg(test)]
 mod test {
+    use std::os::raw::c_void;
+    use std::ptr;
+
     use crate::eal::{self, IovaMode};
     use crate::lcore;
-    use crate::mempool::{self, Mempool};
+    use crate::mempool::{self, GenericMempool, Mempool};
+
+    use super::MempoolObj;
+
+    struct SomeType {
+        ptr: *mut c_void,
+    }
+    impl Default for SomeType {
+        fn default() -> Self {
+            Self {
+                ptr: ptr::null_mut(),
+            }
+        }
+    }
+    impl MempoolObj for SomeType {
+        fn into_raw(self) -> *mut c_void {
+            self.ptr
+        }
+        fn from_raw(ptr: *mut c_void) -> crate::Result<Self> {
+            Ok(Self { ptr })
+        }
+    }
 
     #[test]
     fn test() {
         let _ = eal::Config::new().iova_mode(IovaMode::VA).enter();
-        let mp = Mempool::create(
+        let mp: GenericMempool<SomeType> = GenericMempool::create(
             "mempool",
             64,
             16,
@@ -348,7 +518,7 @@ mod test {
         assert_eq!(mp.in_use(), 0);
         assert_eq!(mp.available(), 64);
 
-        let mp1 = Mempool::lookup("mempool").unwrap();
+        let mp1: GenericMempool<SomeType> = GenericMempool::lookup("mempool").unwrap();
         assert!(mp1.is_full());
         assert_eq!(mp1.in_use(), 0);
         assert_eq!(mp1.available(), 64);

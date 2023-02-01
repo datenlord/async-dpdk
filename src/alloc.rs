@@ -3,7 +3,6 @@
 use dpdk_sys::{rte_free, rte_malloc, rte_malloc_socket, rte_zmalloc, rte_zmalloc_socket};
 use std::{mem, ptr};
 
-
 /// This function allocates memory from the huge-page area of memory. The memory is not cleared.
 #[inline]
 #[must_use]

@@ -2,7 +2,7 @@
 
 use crate::{
     mbuf::Mbuf,
-    mempool::Mempool,
+    mempool::PktMempool,
     proto::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, PTYPE_L2_ETHER},
     Result,
 };
@@ -15,7 +15,7 @@ const L3_MASK: u32 = RTE_PTYPE_L3_MASK;
 /// Mask for L4 protocol id in `rte_mbuf`.
 const L4_MASK: u32 = RTE_PTYPE_L4_MASK;
 
-/// Generic Packet.
+/// Generic Packet. By default, it's an IP packet.
 #[derive(Debug)]
 pub struct Packet {
     /// L3 protocol.
@@ -79,7 +79,7 @@ impl Packet {
     /// Packet -> Mbuf
     #[allow(dead_code)]
     #[inline]
-    pub(crate) fn into_mbuf(mut self, mp: &Mempool) -> Result<Mbuf> {
+    pub(crate) fn into_mbuf(mut self, mp: &PktMempool) -> Result<Mbuf> {
         let mut tail = Mbuf::new(mp)?;
         let mut head: Option<Mbuf> = None;
         for frag in &mut self.frags {

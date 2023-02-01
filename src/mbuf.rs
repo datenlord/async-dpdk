@@ -7,7 +7,7 @@
 //! currently uses just two cache lines, with the most frequently used fields being on the first
 //! of the two cache lines.
 
-use crate::mempool::{Mempool, MempoolInner};
+use crate::mempool::{MempoolInner, MempoolObj, PktMempool};
 use crate::{Error, Result};
 use dpdk_sys::{
     cstring, rte_mbuf, rte_mbuf_buf_addr, rte_pktmbuf_adj, rte_pktmbuf_alloc,
@@ -15,6 +15,7 @@ use dpdk_sys::{
     rte_pktmbuf_free, rte_pktmbuf_headroom, rte_pktmbuf_pool_create, rte_pktmbuf_prepend,
     rte_pktmbuf_tailroom, rte_pktmbuf_trim, RTE_MBUF_DEFAULT_BUF_SIZE, RTE_MBUF_F_INDIRECT,
 };
+use std::os::raw::c_void;
 use std::{mem::MaybeUninit, ptr::NonNull, slice};
 
 /// In this crate we use usize as length for convenience, however DPDK use u16 to represent
@@ -27,12 +28,11 @@ macro_rules! check_len {
     };
 }
 
+/// `Mbuf` is the key component of DPDK library. It is used to hold messages, and also carries
+/// some information about protocols, length, etc, which is for classification. The message
+/// buffers are stored in a mempool, using the Mempool Library.
 ///
-/// The mbuf library provides the ability to allocate and free buffers (mbufs) that may be
-/// used by the DPDK application to store message buffers. The message buffers are stored
-/// in a mempool, using the Mempool Library.
-///
-/// It looks like this:
+/// The memory layout of a `rte_mbuf` is:
 ///     ---------------------------------------------------------------------------------
 ///     | `rte_mbuf` | priv data | head room |          frame data          | tail room |
 ///     ---------------------------------------------------------------------------------
@@ -41,11 +41,22 @@ macro_rules! check_len {
 ///                              <-data_off-><-----------data_len----------->
 ///                              <------------------------`buf_len`--------------------->
 ///
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 #[allow(missing_copy_implementations)]
 pub struct Mbuf {
     /// A pointer to `rte_mbuf`.
     mb: NonNull<rte_mbuf>,
+}
+
+impl MempoolObj for Mbuf {
+    #[inline]
+    fn into_raw(self) -> *mut c_void {
+        self.mb.as_ptr().cast()
+    }
+    #[inline]
+    fn from_raw(ptr: *mut c_void) -> Result<Self> {
+        Self::new_with_ptr(ptr.cast())
+    }
 }
 
 #[allow(unsafe_code)]
@@ -57,7 +68,7 @@ impl Mbuf {
 
     /// Allocate an uninitialized mbuf from mempool.
     #[inline]
-    pub fn new(mp: &Mempool) -> Result<Self> {
+    pub fn new(mp: &PktMempool) -> Result<Self> {
         // SAFETY: ffi
         let ptr = unsafe { rte_pktmbuf_alloc(mp.as_ptr()) };
         Self::new_with_ptr(ptr)
@@ -65,7 +76,7 @@ impl Mbuf {
 
     /// Allocate a bulk of mbufs, initialize refcnt and reset the fields to default values.
     #[inline]
-    pub fn new_bulk(mp: &Mempool, n: u32) -> Result<Vec<Self>> {
+    pub fn new_bulk(mp: &PktMempool, n: u32) -> Result<Vec<Self>> {
         let mut mbufs = (0..n)
             .map(|_| MaybeUninit::<rte_mbuf>::uninit())
             .collect::<Vec<_>>();
@@ -90,7 +101,7 @@ impl Mbuf {
     ///
     /// This function creates and initializes a packet mbuf pool.
     #[inline]
-    pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: i32) -> Result<Mempool> {
+    pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: i32) -> Result<PktMempool> {
         // SAFETY: ffi
         let ptr = unsafe {
             #[allow(clippy::cast_possible_truncation)] // 0x880 < u16::MAX
@@ -104,7 +115,7 @@ impl Mbuf {
             )
         };
         let inner = MempoolInner::new(ptr)?;
-        Ok(Mempool::new(inner))
+        Ok(PktMempool::new(inner))
     }
 
     /// Get the data length of a mbuf.
@@ -154,7 +165,7 @@ impl Mbuf {
     ///  - Attaches newly created mbuf to the segment. Then updates `pkt_len` and `nb_segs`
     ///    of the "clone" packet mbuf to match values from the original packet mbuf.
     #[inline]
-    pub fn pktmbuf_clone(&self, mp: &Mempool) -> Result<Self> {
+    pub fn clone(&self, mp: &PktMempool) -> Result<Self> {
         // SAFETY: ffi
         let ptr = unsafe { rte_pktmbuf_clone(self.as_ptr(), mp.as_ptr()) };
         Self::new_with_ptr(ptr)
@@ -359,7 +370,7 @@ mod test {
         assert_eq!(mbuf.pkt_len(), 10);
 
         // Indirect mbuf.
-        let mbuf2 = mbuf.pktmbuf_clone(&mp).unwrap();
+        let mbuf2 = mbuf.clone(&mp).unwrap();
         assert_eq!(mbuf2.data_slice(), &[0, 1, 2, 3, 4]);
     }
 }
