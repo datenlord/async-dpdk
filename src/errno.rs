@@ -1,6 +1,11 @@
 //! DPDK defined error numbers.
 use dpdk_sys::{errno, rte_exit, rte_strerror};
-use std::{ffi::NulError, net::AddrParseError, os::raw::c_int, sync::PoisonError};
+use std::{
+    ffi::{IntoStringError, NulError},
+    net::AddrParseError,
+    os::raw::c_int,
+    sync::PoisonError,
+};
 use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 
 /// async-dpdk defined Result.
@@ -175,6 +180,13 @@ impl From<NulError> for Error {
 impl From<AddrParseError> for Error {
     #[inline]
     fn from(_error: AddrParseError) -> Self {
+        Error::InvalidArg
+    }
+}
+
+impl From<IntoStringError> for Error {
+    #[inline]
+    fn from(_error: IntoStringError) -> Self {
         Error::InvalidArg
     }
 }

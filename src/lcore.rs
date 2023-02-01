@@ -8,18 +8,17 @@ use dpdk_sys::{
 };
 
 /// Lcore role.
-#[repr(u32)]
 #[derive(Copy, Clone, Debug)]
 #[allow(clippy::exhaustive_enums)] // DPDK defined
 pub enum Role {
     /// An eal-created thread.
-    Eal = rte_lcore_role_t_ROLE_RTE,
+    Eal,
     /// A user-created thread.
-    User = rte_lcore_role_t_ROLE_NON_EAL,
+    User,
     /// A service lcore.
-    Service = rte_lcore_role_t_ROLE_SERVICE,
+    Service,
     /// Off.
-    Off = rte_lcore_role_t_ROLE_OFF,
+    Off,
 }
 
 /// Get current `lcore_id`.

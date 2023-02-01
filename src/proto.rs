@@ -11,8 +11,8 @@ pub(crate) trait Protocol {
     fn length(&self) -> u16;
 }
 
-/// UDP `proto_id`, to be populated in IP header.
-pub(crate) const IP_NEXT_PROTO_UDP: u8 = 0x11;
+// /// UDP `proto_id`, to be populated in IP header.
+// pub(crate) const IP_NEXT_PROTO_UDP: u8 = 0x11;
 
 /// Ethernet header length.
 pub(crate) const ETHER_HDR_LEN: u16 = 14;
@@ -64,16 +64,16 @@ pub enum L4Protocol {
     /// Unknown L4 protocol
     Unknown = RTE_PTYPE_UNKNOWN,
     /// UDP packet type.
-    UDP = RTE_PTYPE_L4_UDP,
+    Udp = RTE_PTYPE_L4_UDP,
     /// TCP packet type.
-    TCP = RTE_PTYPE_L4_TCP,
+    Tcp = RTE_PTYPE_L4_TCP,
 }
 
 impl Protocol for L4Protocol {
     fn length(&self) -> u16 {
         match *self {
-            L4Protocol::UDP => 8,
-            L4Protocol::TCP => 20,
+            L4Protocol::Udp => 8,
+            L4Protocol::Tcp => 20,
             L4Protocol::Unknown => 0,
         }
     }
@@ -84,8 +84,8 @@ impl From<u32> for L4Protocol {
     fn from(num: u32) -> L4Protocol {
         match num {
             RTE_PTYPE_UNKNOWN => L4Protocol::Unknown,
-            RTE_PTYPE_L4_UDP => L4Protocol::UDP,
-            RTE_PTYPE_L4_TCP => L4Protocol::TCP,
+            RTE_PTYPE_L4_UDP => L4Protocol::Udp,
+            RTE_PTYPE_L4_TCP => L4Protocol::Tcp,
             #[allow(clippy::unimplemented)]
             _ => unimplemented!("unknown l4 protocol number {num}"),
         }

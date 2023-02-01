@@ -1,31 +1,8 @@
 //! Allocator
 
 use dpdk_sys::{rte_free, rte_malloc, rte_malloc_socket, rte_zmalloc, rte_zmalloc_socket};
-use std::{mem, ptr, slice};
+use std::{mem, ptr};
 
-/// Get a DPDK-allocated immutable slice.
-#[inline]
-#[must_use]
-pub fn slice(size: usize) -> &'static [u8] {
-    // SAFETY: ffi
-    #[allow(unsafe_code)]
-    unsafe {
-        let ptr = rte_malloc(ptr::null(), size, 0) as *const u8;
-        slice::from_raw_parts(ptr, size)
-    }
-}
-
-/// Get a DPDK-allocated mutable slice.
-#[inline]
-#[must_use]
-pub fn slice_mut(size: usize) -> &'static mut [u8] {
-    // SAFETY: ffi
-    #[allow(unsafe_code)]
-    unsafe {
-        let ptr = rte_malloc(ptr::null(), size, 0).cast::<u8>();
-        slice::from_raw_parts_mut(ptr, size)
-    }
-}
 
 /// This function allocates memory from the huge-page area of memory. The memory is not cleared.
 #[inline]

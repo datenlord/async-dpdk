@@ -107,23 +107,18 @@
     clippy::wildcard_enum_match_arm,
 )]
 // TODO add docs
-#![allow(clippy::missing_errors_doc, clippy::missing_panics_doc)]
+#![allow(clippy::missing_errors_doc)]
 #![feature(stmt_expr_attributes)]
 
 pub use dpdk_sys::{eth_foreach_dev, lcore_foreach, lcore_foreach_worker};
 
 pub mod alloc;
 pub mod eal;
-pub mod eth_dev;
 pub mod lcore;
 pub mod mbuf;
 pub mod mempool;
-pub mod net_dev;
 pub mod packet;
-pub mod proto;
-pub mod udp;
+mod proto;
 
-mod agent;
 mod errno;
 pub use errno::*;
-mod socket;

@@ -17,11 +17,11 @@ const L4_MASK: u32 = RTE_PTYPE_L4_MASK;
 
 /// Generic Packet.
 #[derive(Debug)]
-pub(crate) struct Packet {
+pub struct Packet {
     /// L3 protocol.
-    pub(crate) l3protocol: L3Protocol,
+    pub l3protocol: L3Protocol,
     /// L4 protocol.
-    pub(crate) l4protocol: L4Protocol,
+    pub l4protocol: L4Protocol,
     /// Fragments of slices.
     pub(crate) frags: Vec<BytesMut>,
 }
@@ -29,7 +29,9 @@ pub(crate) struct Packet {
 #[allow(unsafe_code)]
 impl Packet {
     /// Get a new generic Packet instance.
-    pub(crate) fn new(l3protocol: L3Protocol, l4protocol: L4Protocol) -> Self {
+    #[inline]
+    #[must_use]
+    pub fn new(l3protocol: L3Protocol, l4protocol: L4Protocol) -> Self {
         Self {
             frags: vec![],
             l3protocol,
@@ -38,11 +40,14 @@ impl Packet {
     }
 
     /// Append fragment
-    pub(crate) fn append(&mut self, frag: BytesMut) {
+    #[inline]
+    pub fn append(&mut self, frag: BytesMut) {
         self.frags.push(frag);
     }
 
     /// Mbuf -> Packet
+    #[allow(dead_code)]
+    #[inline]
     pub(crate) fn from_mbuf(m: Mbuf) -> Self {
         // XXX protocol information in rte_mbuf may be incorrect
         let (l3protocol, l4protocol): (L3Protocol, L4Protocol) = {
@@ -72,6 +77,8 @@ impl Packet {
     }
 
     /// Packet -> Mbuf
+    #[allow(dead_code)]
+    #[inline]
     pub(crate) fn into_mbuf(mut self, mp: &Mempool) -> Result<Mbuf> {
         let mut tail = Mbuf::new(mp)?;
         let mut head: Option<Mbuf> = None;

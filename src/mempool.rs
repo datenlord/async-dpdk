@@ -1,4 +1,4 @@
-//! mempool wrapper
+//! A memory pool wrapper in safe Rust.
 
 use crate::{Error, Result};
 #[allow(clippy::wildcard_imports)] // too many of them
@@ -9,7 +9,6 @@ use std::{
     collections::HashMap,
     ffi::CString,
     fmt::Debug,
-    mem::MaybeUninit,
     os::raw::c_void,
     ptr::{self, NonNull},
     sync::Mutex,
@@ -40,7 +39,7 @@ pub const MEMPOOL_SINGLE_CONSUMER: u32 = RTE_MEMPOOL_F_SC_GET;
 /// If set, allocated objects won't necessarily be contiguous in IO memory.
 pub const MEMPOOL_NO_IOVA_CONTIG: u32 = RTE_MEMPOOL_F_NO_IOVA_CONTIG;
 
-/// Mempool is an allocator for fixed sized object.In DPDK, it's identified by name and uses a
+/// Mempool is an allocator for fixed sized object. In DPDK, it's identified by name and uses a
 /// mempool handler to store free objects. It provides some other optional services such as
 /// per-core object cache and an alignment helper.
 #[derive(Debug)]
@@ -84,25 +83,25 @@ impl Mempool {
 
     /// Get one object from the mempool.
     #[inline]
-    pub fn get<T: MempoolObj>(&self) -> Result<T> {
+    pub fn get<T: Default>(&self) -> Result<Box<T>> {
         self.inner.get::<T>()
     }
 
     /// Put one object back in the mempool.
     #[inline]
-    pub fn put(&self, obj: impl MempoolObj) {
+    pub fn put<T>(&self, obj: Box<T>) {
         self.inner.put(obj);
     }
 
     /// Get several objects from the mempool.
     #[inline]
-    pub fn get_bulk<T: MempoolObj>(&self, n: u32) -> Result<Vec<T>> {
+    pub fn get_bulk<T: Default>(&self, n: u32) -> Result<Vec<Box<T>>> {
         self.inner.get_bulk(n)
     }
 
     /// Put several objects back in the mempool.
     #[inline]
-    pub fn put_bulk(&self, objs: &[impl MempoolObj], n: u32) {
+    pub fn put_bulk<T>(&self, objs: Vec<Box<T>>, n: u32) {
         self.inner.put_bulk(objs, n);
     }
 
@@ -240,50 +239,56 @@ impl MempoolInner {
 
     /// Put an object to the mempool.
     #[inline]
-    fn put(&self, obj: impl MempoolObj) {
-        self.put_bulk(&[obj], 1);
+    fn put<T>(&self, obj: Box<T>) {
+        self.put_bulk(vec![obj], 1);
     }
 
     /// Put several objects back to the mempool.
     #[inline]
-    fn put_bulk(&self, objs: &[impl MempoolObj], n: u32) {
-        let mut obj_table = objs.iter().map(MempoolObj::as_c_void).collect::<Vec<_>>();
+    fn put_bulk<T>(&self, objs: Vec<Box<T>>, n: u32) {
+        let mut obj_table = objs.into_iter().map(Box::into_raw).collect::<Vec<_>>();
         // SAFETY: ffi
         #[allow(unsafe_code)]
         unsafe {
-            rte_mempool_put_bulk(self.mp.as_ptr(), obj_table.as_mut_ptr(), n);
+            rte_mempool_put_bulk(self.mp.as_ptr(), obj_table.as_mut_ptr().cast(), n);
         }
     }
 
     /// Get an object from the mempool.
     #[inline]
-    fn get<T: MempoolObj>(&self) -> Result<T> {
-        let mut obj = MaybeUninit::<T>::uninit();
+    fn get<T: Default>(&self) -> Result<Box<T>> {
+        let mut ptr = ptr::null_mut::<T>();
         // SAFETY: ffi
-        let errno =
-            unsafe { rte_mempool_get(self.mp.as_ptr(), obj.as_mut_ptr().cast::<*mut c_void>()) };
+        let errno = #[allow(trivial_casts)]
+        unsafe {
+            rte_mempool_get(
+                self.mp.as_ptr(),
+                ptr::addr_of_mut!(ptr).cast::<*mut c_void>(),
+            )
+        };
         Error::from_ret(errno)?;
+        // SAFETY: ptr is valid
+        unsafe {
+            *ptr = T::default();
+        }
         // SAFETY: objs are initialized since no error reported
-        unsafe { Ok(obj.assume_init()) }
+        unsafe { Ok(Box::from_raw(ptr)) }
     }
 
     /// Get a bulk of objects.
     #[inline]
-    fn get_bulk<T: MempoolObj>(&self, n: u32) -> Result<Vec<T>> {
-        let mut objs = (0..n)
-            .map(|_| MaybeUninit::<T>::uninit())
-            .collect::<Vec<_>>();
-        let mut obj_table = objs
-            .iter_mut()
-            .map(|obj| obj.as_mut_ptr().cast::<c_void>())
-            .collect::<Vec<_>>();
+    fn get_bulk<T: Default>(&self, n: u32) -> Result<Vec<Box<T>>> {
+        let mut ptrs = (0..n).map(|_| ptr::null_mut::<T>()).collect::<Vec<_>>();
         // SAFETY: ffi
-        let errno = unsafe { rte_mempool_get_bulk(self.mp.as_ptr(), obj_table.as_mut_ptr(), n) };
+        let errno = unsafe { rte_mempool_get_bulk(self.mp.as_ptr(), ptrs.as_mut_ptr().cast(), n) };
         Error::from_ret(errno)?;
         // SAFETY: objs are initialized in `rte_mempool_get_bulk`
-        Ok(objs
+        Ok(ptrs
             .into_iter()
-            .map(|obj| unsafe { obj.assume_init() })
+            .map(|ptr| unsafe { 
+                *ptr = T::default();
+                Box::from_raw(ptr)
+            })
             .collect())
     }
 
@@ -318,15 +323,6 @@ impl MempoolInner {
     fn as_ptr(&self) -> *mut rte_mempool {
         self.mp.as_ptr()
     }
-}
-
-/// Mempool elements
-#[allow(clippy::module_name_repetitions)]
-pub trait MempoolObj: Sized {
-    /// Transform objects into C pointers.
-    fn as_c_void(&self) -> *mut c_void;
-    /// Build an object from C pointer.
-    fn from_c_void(ptr: *mut c_void) -> Self;
 }
 
 #[cfg(test)]

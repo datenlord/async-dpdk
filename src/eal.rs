@@ -1,6 +1,5 @@
 //! EAL (Environment Abstract Layer)
 
-use crate::net_dev;
 use crate::{Error, Result};
 use dpdk_sys::{
     rte_eal_cleanup, rte_eal_get_runtime_dir, rte_eal_has_hugepages, rte_eal_has_pci, rte_eal_init,
@@ -59,22 +58,17 @@ pub fn has_pci() -> bool {
 /// Get the runtime directory of DPDK
 #[allow(unsafe_code)]
 #[inline]
-#[must_use]
-pub fn runtime_dir() -> PathBuf {
+pub fn runtime_dir() -> Result<PathBuf> {
     // SAFETY: ffi
     let ptr = unsafe { rte_eal_get_runtime_dir() };
     // SAFETY: read C string
     let cs = unsafe { CString::from_raw(ptr as _) };
-    #[allow(clippy::unwrap_used)]
-    PathBuf::from(cs.into_string().unwrap())
+    Ok(PathBuf::from(cs.into_string().map_err(Error::from)?))
 }
 
 impl Drop for Eal {
     #[inline]
     fn drop(&mut self) {
-        // Close all devices
-        #[allow(clippy::unwrap_used)] // used in drop
-        net_dev::device_close().unwrap();
         // SAFETY: ffi
         #[allow(unsafe_code)]
         let errno = unsafe { rte_eal_cleanup() };
@@ -128,12 +122,12 @@ impl Config {
     /// Create a new eal builder.
     #[inline]
     #[must_use]
+    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)]
     pub fn new() -> Self {
         let env_args = std::env::args().collect::<Vec<_>>();
         Self {
             args: vec![
-                #[allow(clippy::indexing_slicing, clippy::unwrap_used)]
-                // the first of env args is the program name
+                #[allow(clippy::indexing_slicing)] // the first of env args is the program name
                 CString::new(env_args[0].as_str()).unwrap(),
             ],
             addrs: vec![],
@@ -153,7 +147,7 @@ impl Config {
     /// Set core mask to EAL.
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used)] // impossible to panic
+    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
     pub fn coremask(mut self, mask: u64) -> Self {
         self.args.push(CString::new("-c").unwrap());
         self.args.push(CString::new(mask.to_string()).unwrap());
@@ -196,7 +190,7 @@ impl Config {
     /// Disable PCI.
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used)] // impossible to panic
+    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
     pub fn no_pci(mut self, no_pci: bool) -> Self {
         if no_pci {
             self.args.push(CString::new("--no-pci").unwrap());
@@ -207,7 +201,7 @@ impl Config {
     /// Reserved memory on start in megabytes.
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used)] // impossible to panic
+    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
     pub fn memory_mb(mut self, size: u32) -> Self {
         self.args.push(CString::new("-m").unwrap());
         self.args.push(CString::new(size.to_string()).unwrap());
@@ -217,7 +211,7 @@ impl Config {
     /// Set iova mode.
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used)] // impossible to panic
+    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
     pub fn iova_mode(mut self, mode: IovaMode) -> Self {
         self.args.push(CString::new("--iova-mode").unwrap());
         match mode {
@@ -230,7 +224,7 @@ impl Config {
     /// Set log level
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used)] // impossible to panic
+    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
     pub fn log_level(mut self, log_level: LogLevel) -> Self {
         self.args.push(CString::new("--log-level").unwrap());
         self.args
@@ -252,7 +246,7 @@ impl Config {
             .map(|s| s.as_ptr() as *mut c_char)
             .collect::<Vec<_>>();
 
-        if pargs.len() < i32::MAX as usize {
+        if pargs.len() > i32::MAX as usize {
             return Err(Error::TooBig);
         }
         // SAFETY: ffi
@@ -268,7 +262,6 @@ impl Config {
         }
         let context = Arc::new(Eal {});
         *CONTEXT.write().map_err(Error::from)? = Some(context);
-        net_dev::device_probe(self.addrs)?;
         Ok(())
     }
 }
