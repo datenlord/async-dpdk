@@ -1,9 +1,30 @@
-//! Allocator
+//! DPDK EAL facilitates the reservation of huge-page memory zones. By default, the EAL reserves
+//! hugepages as soon as the app launches, which will be returned to the system when the app ends.
+//! This module provides APIs for the allocation and deallocation of DPDK reserved memory. Also,
+//! users should be careful to deallocate the applied memory back to DPDK memory subsystem when
+//! the usage is over.
+//!
+//! There are two modes in which DPDK memory subsystem can operate: dynamic mode and legacy mode.
+//! For more details, please check
+//! #[DPDK document](https://doc.dpdk.org/guides/prog_guide/env_abstraction_layer.html#memory-mapping-discovery-and-memory-reservation)
+//! for more details.
+//!
+//! # Examples
+//!
+//! ```
+//! eal::Config::new().iova_mode(IovaMode::VA).enter().unwrap();
+//! let t = alloc::malloc::<Test>();
+//! unsafe {
+//!     alloc::free(t);
+//! }
+//! ```
 
 use dpdk_sys::{rte_free, rte_malloc, rte_malloc_socket, rte_zmalloc, rte_zmalloc_socket};
 use std::{mem, ptr};
 
-/// This function allocates memory from the huge-page area of memory. The memory is not cleared.
+/// This function allocates memory from the huge-page area of memory. The memory is not initialized.
+/// In NUMA systems, the memory allocated resides on the same NUMA socket as the core that calls this
+/// function.
 #[inline]
 #[must_use]
 pub fn malloc<T: Default>() -> Box<T> {
@@ -16,8 +37,7 @@ pub fn malloc<T: Default>() -> Box<T> {
     }
 }
 
-/// Allocate zeroed memory from the heap. Equivalent to `rte_malloc`() except that the memory zone is
-/// initialised with zeros. In NUMA systems, the memory allocated resides on the same NUMA socket
+/// Allocate zeroed memory from the heap. In NUMA systems, the memory allocated resides on the same NUMA socket
 /// as the core that calls this function.
 #[inline]
 #[must_use]
@@ -31,7 +51,7 @@ pub fn zmalloc<T: Default>() -> Box<T> {
     }
 }
 
-/// Malloc on specific socket.
+/// Allocate memory from hugepages on specific socket.
 #[inline]
 #[must_use]
 pub fn malloc_socket<T: Default>(socket: i32) -> Box<T> {
@@ -44,7 +64,7 @@ pub fn malloc_socket<T: Default>(socket: i32) -> Box<T> {
     }
 }
 
-/// Zmalloc on specific socket.
+/// Allocate zeroed memory from hugepages on specific socket.
 #[inline]
 #[must_use]
 pub fn zmalloc_socket<T: Default>(socket: i32) -> Box<T> {
@@ -58,12 +78,17 @@ pub fn zmalloc_socket<T: Default>(socket: i32) -> Box<T> {
 }
 
 /// Frees the memory space pointed to by the provided pointer. This pointer must have been returned
-/// by a previous call to `rte_malloc`(), `rte_zmalloc`(), `rte_calloc`() or `rte_realloc`(). The behaviour of
-/// `rte_free`() is undefined if the pointer does not match this requirement.
+/// by a previous call to `malloc()`, `zmalloc()`, `malloc_socket()` or `zmalloc_socket()`.
 ///
 /// If the pointer is NULL, the function does nothing.
+///
+/// # Safety
+///
+/// The behaviour of `free()` is undefined if the pointer does not match this requirement.
+///
 #[inline]
-pub fn free<T>(obj: Box<T>) {
+#[allow(unsafe_code)]
+pub unsafe fn free<T>(obj: Box<T>) {
     let ptr = Box::into_raw(obj);
     // SAFETY: ffi
     #[allow(unsafe_code)]
@@ -91,6 +116,9 @@ mod tests {
         assert_eq!(t.x, 0);
         assert_eq!(t.y, 0);
 
-        alloc::free(t);
+        #[allow(unsafe_code)]
+        unsafe {
+            alloc::free(t);
+        }
     }
 }

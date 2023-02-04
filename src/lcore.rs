@@ -1,4 +1,8 @@
-//! An module handling lcore.
+//! The term `lcore` (i.e. logical core) refers to a DPDK thread. Typically, it is pinned to
+//! a physical core to avoid task switching.
+//!
+//! This module provides some helper functions to check lcore informations such as lcore id,
+//! socket id, lcore role, etc.
 
 #![allow(unsafe_code)]
 use dpdk_sys::{
@@ -21,7 +25,7 @@ pub enum Role {
     Off,
 }
 
-/// Get current `lcore_id`.
+/// Get the current `lcore_id`.
 #[inline]
 #[must_use]
 pub fn id() -> u32 {

@@ -1,9 +1,31 @@
-//! EAL (Environment Abstract Layer)
+//! EAL (Environment Abstract Layer) in DPDK is responsible for gaining access to low-level
+//! resources such as hardware and memory space. It provides a generic interface that
+//! hides the environment specifics from the applications and libraries.
+//!
+//! EAL provides services such as DPDK loading and launching, system memory reservation,
+//! interrupt handling and core affinity assignment.
+//!
+//! This module deals with the configuring and launching of EAL. Users should first enter
+//! EAL environment before dealing with any DPDK provided features.
+//!
+//! # Example
+//!
+//! A simple example of setting up the environment:
+//!
+//! ```
+//! use async_dpdk::eal::{self, IovaMode};
+//!
+//! eal::Config::new()
+//!     .enter()
+//!     .coremask(0x3f)
+//!     .device_probe(&["192.168.0.1", "192.168.0.2"])
+//!     .iova_mode(IovaMode::VA)
+//!     .unwrap();
+//! ```
 
 use crate::{Error, Result};
 use dpdk_sys::{
     rte_eal_cleanup, rte_eal_get_runtime_dir, rte_eal_has_hugepages, rte_eal_has_pci, rte_eal_init,
-    rte_mp_disable,
 };
 use lazy_static::lazy_static;
 use log::error;
@@ -17,25 +39,13 @@ lazy_static! {
     static ref CONTEXT: RwLock<Option<Arc<Eal>>> = RwLock::new(None);
 }
 
-/// EAL
+/// The existence of an `Eal` instance shows the readiness of a DPDK environment.
+#[non_exhaustive]
 #[derive(Debug)]
-#[allow(clippy::exhaustive_structs)]
 pub struct Eal {}
 
 #[allow(unsafe_code)]
 unsafe impl Sync for Eal {}
-
-/// Disable multiprocess.
-///
-/// This function can be called to indicate that multiprocess won't be used for the rest of
-/// the application life.
-#[allow(unsafe_code)]
-#[inline]
-#[must_use]
-pub fn disable_mp() -> bool {
-    // SAFETY: ffi
-    unsafe { rte_mp_disable() }
-}
 
 /// Whether EAL is using hugepages.
 #[allow(unsafe_code)]
@@ -46,7 +56,7 @@ pub fn has_hugepages() -> bool {
     unsafe { rte_eal_has_hugepages() != 0 }
 }
 
-/// Whether EAL is using PCI bus. Disabled by –no-pci option.
+/// Whether EAL is using PCI bus.
 #[allow(unsafe_code)]
 #[inline]
 #[must_use]
@@ -76,7 +86,7 @@ impl Drop for Eal {
     }
 }
 
-/// EAL Builder
+/// Used for the configuration of EAL.
 #[derive(Debug, Default)]
 pub struct Config {
     /// Args passed to `rte_eal_init`.
@@ -221,7 +231,7 @@ impl Config {
         self
     }
 
-    /// Set log level
+    /// Set log level.
     #[inline]
     #[must_use]
     #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
@@ -232,9 +242,8 @@ impl Config {
         self
     }
 
-    /// It calls `rte_eal_init` to initialize the Environment Abstraction Layer (EAL). This function
-    /// is to be executed on the MAIN lcore only, as soon as possible in the application's main()
-    /// function. It puts the WORKER lcores in the WAIT state.
+    /// Initialize the Environment Abstraction Layer (EAL). This function is to be executed on
+    /// the MAIN lcore only, as soon as possible in the application's `main()` function.
     #[inline]
     pub fn enter(self) -> Result<()> {
         if CONTEXT.read().map_err(Error::from)?.is_some() {
