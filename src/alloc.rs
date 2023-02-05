@@ -84,8 +84,7 @@ pub fn zmalloc_socket<T: Default>(socket: i32) -> Box<T> {
 ///
 /// # Safety
 ///
-/// The behaviour of `free()` is undefined if the pointer does not match this requirement.
-///
+/// The behaviour of `free()` is undefined if the memory is not allocated by DPDK.
 #[inline]
 #[allow(unsafe_code)]
 pub unsafe fn free<T>(obj: Box<T>) {

@@ -1,4 +1,4 @@
-//! General expression of packets.
+//! Generic L3 packet.
 
 use crate::{
     mbuf::Mbuf,
@@ -15,14 +15,17 @@ const L3_MASK: u32 = RTE_PTYPE_L3_MASK;
 /// Mask for L4 protocol id in `rte_mbuf`.
 const L4_MASK: u32 = RTE_PTYPE_L4_MASK;
 
-/// Generic Packet. By default, it's an IP packet.
+/// Generic packet. By default, it's an network layer packet.
+///
+/// It is equivalent to a `Mbuf` without L2 header. It consists of several memory slices for easy
+/// L3/L4 protocol headers constructing and parsing.
 #[derive(Debug)]
 pub struct Packet {
-    /// L3 protocol.
+    /// L3 (Network layer) protocol.
     pub l3protocol: L3Protocol,
-    /// L4 protocol.
+    /// L4 (Transport layer) protocol.
     pub l4protocol: L4Protocol,
-    /// Fragments of slices.
+    /// Fragments of slices. `BytesMut` indicates that `Packet` owns its fragments exclusively.
     pub(crate) frags: Vec<BytesMut>,
 }
 
@@ -45,7 +48,7 @@ impl Packet {
         self.frags.push(frag);
     }
 
-    /// Mbuf -> Packet
+    /// Takes the ownership of a `Mbuf` and convert it to a `Packet` instance.
     #[allow(dead_code)]
     #[inline]
     pub(crate) fn from_mbuf(m: Mbuf) -> Self {
@@ -76,7 +79,7 @@ impl Packet {
         }
     }
 
-    /// Packet -> Mbuf
+    /// Convert a `Packet` to a `Mbuf`.
     #[allow(dead_code)]
     #[inline]
     pub(crate) fn into_mbuf(mut self, mp: &PktMempool) -> Result<Mbuf> {

@@ -8,7 +8,7 @@
 //! This module deals with the configuring and launching of EAL. Users should first enter
 //! EAL environment before dealing with any DPDK provided features.
 //!
-//! # Example
+//! # Examples
 //!
 //! A simple example of setting up the environment:
 //!
@@ -65,7 +65,11 @@ pub fn has_pci() -> bool {
     unsafe { rte_eal_has_pci() != 0 }
 }
 
-/// Get the runtime directory of DPDK
+/// Get the runtime directory of DPDK.
+///
+/// # Errors
+///
+/// This function returns an error if the C string failed to convert to Rust string.
 #[allow(unsafe_code)]
 #[inline]
 pub fn runtime_dir() -> Result<PathBuf> {
@@ -95,7 +99,8 @@ pub struct Config {
     addrs: Vec<IpAddr>,
 }
 
-/// IOVA mode.
+/// IOVA mode. The addresses used by hardwares, it should either be physical addresses or
+/// virtual addresses.
 #[derive(Debug, Clone, Copy)]
 #[allow(clippy::exhaustive_enums)]
 pub enum IovaMode {
@@ -129,7 +134,7 @@ pub enum LogLevel {
 }
 
 impl Config {
-    /// Create a new eal builder.
+    /// Create a new eal `Config` instance.
     #[inline]
     #[must_use]
     #[allow(clippy::unwrap_used, clippy::missing_panics_doc)]
@@ -144,7 +149,15 @@ impl Config {
         }
     }
 
-    /// Probe devices or not.
+    /// Probe UIO/VFIO devices.
+    ///
+    /// This function takes a list of IP addresses as identifiers for each net device. The number
+    /// of addresses should be less than the number of UIO/VFIO devices. The devices will be started
+    /// after entering EAL.
+    ///
+    /// # Errors
+    ///
+    /// The function returns an error if the address strings does not match IP format.
     #[inline]
     pub fn device_probe(mut self, addr_str: &[&str]) -> Result<Self> {
         for addr in addr_str.iter() {
@@ -165,6 +178,10 @@ impl Config {
     }
 
     /// Set core list to EAL.
+    ///
+    /// # Errors
+    ///
+    /// The function returns an error if the `list` argument is empty.
     #[inline]
     pub fn corelist(mut self, list: &str) -> Result<Self> {
         self.args.push(CString::new("-l").map_err(Error::from)?);
@@ -173,6 +190,10 @@ impl Config {
     }
 
     /// Set core map to EAL.
+    ///
+    /// # Errors
+    ///
+    /// The function returns an error if the `map` argument is empty.
     #[inline]
     pub fn coremap(mut self, map: &str) -> Result<Self> {
         self.args
@@ -182,6 +203,10 @@ impl Config {
     }
 
     /// Set pci blacklist.
+    ///
+    /// # Errors
+    ///
+    /// The function returns an error if the `name` argument is empty.
     #[inline]
     pub fn pci_blacklist(mut self, name: &str) -> Result<Self> {
         self.args.push(CString::new("-b").map_err(Error::from)?);
@@ -190,6 +215,10 @@ impl Config {
     }
 
     /// Set pci whitelist.
+    ///
+    /// # Errors
+    ///
+    /// The function returns an error if the `name` argument is empty.
     #[inline]
     pub fn pci_whitelist(mut self, name: &str) -> Result<Self> {
         self.args.push(CString::new("-w").map_err(Error::from)?);
@@ -242,8 +271,25 @@ impl Config {
         self
     }
 
-    /// Initialize the Environment Abstraction Layer (EAL). This function is to be executed on
-    /// the MAIN lcore only, as soon as possible in the application's `main()` function.
+    /// Initialize the Environment Abstraction Layer (EAL). This function is to be executed on the MAIN
+    /// lcore only, as soon as possible in the application's `main()` function.
+    ///
+    /// # Errors
+    ///
+    /// Possible reasons for failure:
+    ///
+    /// - `Error::NoAccess` indicates a permissions issue.
+    /// - `Error::TempUnavail` indicates either a bus or system resource was not available, setup may be
+    ///   attempted again.
+    /// - `Error::Already` indicates that the EAL has already been initialized, and cannot be initialized
+    ///   again.
+    /// - `Error::InvalidArg` indicates invalid parameters were passed.
+    /// - `Error::NoMem` indicates failure likely caused by an out-of-memory condition.
+    /// - `Error::NoDev` indicates memory setup issues.
+    /// - `Error::NotSupported` indicates that the EAL cannot initialize on this system.
+    /// - `Error::Proto` indicates that the PCI bus is either not present, or is not readable by the eal.
+    /// - `Error::NoExec` indicates that a service core failed to launch successfully.
+    /// - `Error::ToBig` indicates that there are too many configuration items.
     #[inline]
     pub fn enter(self) -> Result<()> {
         if CONTEXT.read().map_err(Error::from)?.is_some() {

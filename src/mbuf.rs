@@ -13,13 +13,13 @@ use dpdk_sys::{
     cstring, rte_mbuf, rte_mbuf_buf_addr, rte_pktmbuf_adj, rte_pktmbuf_alloc,
     rte_pktmbuf_alloc_bulk, rte_pktmbuf_append, rte_pktmbuf_chain, rte_pktmbuf_clone,
     rte_pktmbuf_free, rte_pktmbuf_headroom, rte_pktmbuf_pool_create, rte_pktmbuf_prepend,
-    rte_pktmbuf_tailroom, rte_pktmbuf_trim, RTE_MBUF_DEFAULT_BUF_SIZE, RTE_MBUF_F_INDIRECT,
+    rte_pktmbuf_tailroom, rte_pktmbuf_trim, RTE_MBUF_DEFAULT_BUF_SIZE,
 };
 use std::os::raw::c_void;
 use std::{mem::MaybeUninit, ptr::NonNull, slice};
 
 /// In this crate we use usize as length for convenience, however DPDK use u16 to represent
-/// length, we should check the `len` argument is not too large for u16.
+/// length. Check the `len` argument is not too large for u16.
 macro_rules! check_len {
     ($len:expr) => {
         if $len < u16::MAX as usize {
@@ -28,19 +28,21 @@ macro_rules! check_len {
     };
 }
 
-/// `Mbuf` is the key component of DPDK library. It is used to hold messages, and also carries
-/// some information about protocols, length, etc, which is for classification. The message
-/// buffers are stored in a mempool, using the Mempool Library.
+/// `Mbuf` is used to hold messages, and also carries some information about protocols,
+/// length, etc, for classification. The message buffers are stored in a `Mempool`.
 ///
-/// The memory layout of a `rte_mbuf` is:
+/// `Mbuf` is a safe wrapper of `rte_mbuf`, whose memory layout is:
+///
 ///     ---------------------------------------------------------------------------------
 ///     | `rte_mbuf` | priv data | head room |          frame data          | tail room |
 ///     ---------------------------------------------------------------------------------
 ///     ^                        ^
-///     *`rte_mbuf`              `buf_addr`
+///     *`rte_mbuf`              *`buf_addr`
 ///                              <-data_off-><-----------data_len----------->
-///                              <------------------------`buf_len`--------------------->
+///                              <------------------------buf_len----------------------->
 ///
+/// There's a contiguous slice of memory in `rte_mbuf` to hold frame data. To hold packets
+/// with arbitrary lengths, `rte_mbuf`s can be chained together as a linked list.
 #[derive(Debug)]
 #[allow(missing_copy_implementations)]
 pub struct Mbuf {
@@ -67,6 +69,10 @@ impl Mbuf {
     }
 
     /// Allocate an uninitialized mbuf from mempool.
+    ///
+    /// # Errors
+    ///
+    /// This function returns an error if allocation fails.
     #[inline]
     pub fn new(mp: &PktMempool) -> Result<Self> {
         // SAFETY: ffi
@@ -74,7 +80,12 @@ impl Mbuf {
         Self::new_with_ptr(ptr)
     }
 
-    /// Allocate a bulk of mbufs, initialize refcnt and reset the fields to default values.
+    /// Allocate a bulk of mbufs, initialize reference count and reset the fields
+    /// to default values.
+    ///
+    /// # Errors
+    ///
+    /// This function returns an error if allocation fails.
     #[inline]
     pub fn new_bulk(mp: &PktMempool, n: u32) -> Result<Vec<Self>> {
         let mut mbufs = (0..n)
@@ -97,9 +108,11 @@ impl Mbuf {
         Ok(v)
     }
 
-    /// Create a mbuf pool.
+    /// Create a mbuf pool. This function creates and initializes a packet mbuf pool.
     ///
-    /// This function creates and initializes a packet mbuf pool.
+    /// # Errors
+    ///
+    /// This function returns an error if the allocation of a `Mempool` fails.
     #[inline]
     pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: i32) -> Result<PktMempool> {
         // SAFETY: ffi
@@ -161,22 +174,18 @@ impl Mbuf {
     /// Create a "clone" of the given packet mbuf.
     ///
     /// Walks through all segments of the given packet mbuf, and for each of them:
-    ///  - Creates a new packet mbuf from the given pool.
-    ///  - Attaches newly created mbuf to the segment. Then updates `pkt_len` and `nb_segs`
+    /// - Creates a new packet mbuf from the given pool.
+    /// - Attaches newly created mbuf to the segment. Then updates `pkt_len` and `nb_segs`
     ///    of the "clone" packet mbuf to match values from the original packet mbuf.
+    ///
+    /// # Errors
+    ///
+    /// This function returns an error if the allocation failed.
     #[inline]
     pub fn clone(&self, mp: &PktMempool) -> Result<Self> {
         // SAFETY: ffi
         let ptr = unsafe { rte_pktmbuf_clone(self.as_ptr(), mp.as_ptr()) };
         Self::new_with_ptr(ptr)
-    }
-
-    /// Whether this mbuf is indirect
-    #[inline]
-    #[must_use]
-    pub fn is_indirect(&self) -> bool {
-        // SAFETY: the *rte_mbuf pointer is checked at initialization and never changes
-        unsafe { (*self.as_ptr()).ol_flags & RTE_MBUF_F_INDIRECT != 0 }
     }
 
     /// Test if mbuf data is contiguous (i.e. with only one segment).
@@ -217,8 +226,11 @@ impl Mbuf {
     /// Prepend len bytes to an mbuf data area.
     ///
     /// Returns a pointer to the new data start address.
-    /// If there is not enough headroom in the first segment, the function will return NULL,
-    /// without modifying the mbuf.
+    ///
+    /// # Errors
+    ///
+    /// If there is not enough headroom in the first segment, the function fail,
+    /// without modifying the `Mbuf`.
     #[inline]
     pub fn prepend(&mut self, len: usize) -> Result<&mut [u8]> {
         check_len!(len);
@@ -234,11 +246,13 @@ impl Mbuf {
         unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
     }
 
-    /// Append len bytes to an mbuf.
+    /// Append len bytes to an mbuf. Append len bytes to an mbuf and return a pointer
+    /// to the start address of the added data.
     ///
-    /// Append len bytes to an mbuf and return a pointer to the start address of the added
-    /// data. If there is not enough tailroom in the last segment, the function will return
-    /// NULL, without modifying the mbuf.
+    /// # Errors
+    ///
+    /// If there is not enough tailroom in the last segment, the function will fail,
+    /// without modifying the `Mbuf`.
     #[inline]
     pub fn append(&mut self, len: usize) -> Result<&mut [u8]> {
         check_len!(len);
@@ -254,11 +268,13 @@ impl Mbuf {
         unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
     }
 
-    /// Remove len bytes at the beginning of an mbuf.
+    /// Remove len bytes at the beginning of an mbuf. Returns a pointer to the start
+    /// address of the new data area.
     ///
-    /// Returns a pointer to the start address of the new data area. If the length is greater
-    /// than the length of the first segment, then the function will fail and return NULL,
-    /// without modifying the mbuf.
+    /// # Errors
+    ///
+    /// If the length is greater than the length of the first segment, then the function
+    /// will fail with the `Mbuf` unchanged.
     #[inline]
     pub fn adj(&mut self, len: usize) -> Result<()> {
         check_len!(len);
@@ -276,8 +292,10 @@ impl Mbuf {
 
     /// Remove len bytes of data at the end of the mbuf.
     ///
+    /// # Errors
+    ///
     /// If the length is greater than the length of the last segment, the function will fail
-    /// and return -1 without modifying the mbuf.
+    /// with the `Mbuf` unchanged.
     #[inline]
     pub fn trim(&mut self, len: usize) -> Result<()> {
         check_len!(len);
@@ -297,6 +315,10 @@ impl Mbuf {
     ///
     /// Note: The implementation will do a linear walk over the segments to find the tail entry.
     /// For cases when there are many segments, it's better to chain the entries manually.
+    ///
+    /// # Errors
+    ///
+    /// The chain segment limit exceeded.
     #[inline]
     #[allow(clippy::needless_pass_by_value)] // the ownership of the last one should be taken
     pub fn chain(&mut self, tail: Mbuf) -> Result<()> {

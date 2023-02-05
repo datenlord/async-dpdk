@@ -13,104 +13,77 @@ use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Errors from DPDK and rust.
+#[doc(hidden)]
 #[non_exhaustive]
 #[derive(Copy, Clone, Debug, thiserror::Error)]
 pub enum Error {
-    /// Operation not permitted.
     #[error("Operation not permitted")]
     NoPerm,
-    /// No such file or directory.
     #[error("No such file or directory")]
     NoEntry,
-    /// No such process.
     #[error("No such process")]
     NoProc,
-    /// Interrupted system calls.
     #[error("Interrupted system call")]
     Interrupted,
-    /// Input/output error.
     #[error("Input/output error")]
     IoErr,
-    /// Device not configured.
     #[error("Device not configured")]
     NotConfigured,
-    /// Argument list too long.
     #[error("Argument list too long")]
     TooBig,
-    /// Execute format error.
     #[error("Exec format error")]
     NoExec,
-    /// Bad fd.
     #[error("Bad fd")]
     BadFd,
-    /// Resource temporarily unavailable.
     #[error("Resource temporarily unavailable")]
     TempUnavail,
-    /// Cannot allocate memory.
     #[error("Cannot allocate memory")]
     NoMem,
-    /// Permission denied.
     #[error("Permission denied")]
     NoAccess,
-    /// Bad address.
     #[error("Bad address")]
     BadAddress,
-    /// Device or resource busy.
     #[error("Device or resource busy")]
     Busy,
-    /// File exists.
     #[error("File exists")]
     Exists,
-    /// Invalid cross device link.
     #[error("Invalid cross device link")]
     CrossDev,
-    /// No suck device.
     #[error("No such device")]
     NoDev,
-    /// Invalid argument.
     #[error("Invalid argument")]
     InvalidArg,
-    /// No space left on device.
     #[error("No space left on device")]
     NoSpace,
-    /// Broken pipe.
     #[error("Broken pipe")]
     BrokenPipe,
-    /// Numerical result out of range.
     #[error("Numerical result out of range")]
     OutOfRange,
-    /// Value too large for defined data types.
     #[error("Value too large for defined data type")]
     Overflow,
-    /// Not supported.
     #[error("Not supported")]
     NotSupported,
-    /// Operation already in progress.
     #[error("Operation already in progress")]
     Already,
-    /// No buffer space available.
     #[error("No buffer space available")]
     NoBuf,
-    /// Operation not allowed in secondary processes.
+    #[error("Protocol error")]
+    Proto,
     #[error("Operation not allowed in secondary processes")]
     Secondary, // RTE defined
-    /// Missing `rte_config`.
     #[error("Missing rte_config")]
     NoConfig, // RTE defined
-    /// Unknown error.
     #[error("Unknown error")]
     Unknown,
-    /// Lock poisoned.
     #[error("Lock poisoned")]
     Poisoned,
-    /// Needed resource not started.
     #[error("Needed resource not started")]
     NotStart,
-    /// Not exist.
     #[error("Not exist")]
     NotExist,
 }
 
+#[doc(hidden)]
 impl Error {
     /// Read error code on stacks.
     #[inline]
@@ -178,6 +151,7 @@ impl From<i32> for Error {
             libc::ENOTSUP => Error::NotSupported,
             libc::EALREADY => Error::Already,
             libc::ENOBUFS => Error::NoBuf,
+            libc::EPROTO => Error::Proto,
             1001 => Error::Secondary,
             1002 => Error::NoConfig,
             e if e > 0 => Error::Unknown,

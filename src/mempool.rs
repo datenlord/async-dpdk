@@ -1,4 +1,8 @@
-//! A memory pool wrapper in safe Rust.
+//! Memory pool is an allocator of fixed-sized objects. It is based on `rte_ring`, a lockless FIFO queue
+//! in DPDK. It provides some other optional services such as a per-core object cache and an alignment
+//! helper to ensure that objects are padded to spread them equally on all DRAM or DDR3 channels.
+//!
+//! In DPDK apps, mempools are widely used in the memory management for packet buffers.
 
 use crate::{mbuf::Mbuf, Error, Result};
 #[allow(clippy::wildcard_imports)] // too many of them
@@ -40,23 +44,52 @@ pub const MEMPOOL_SINGLE_CONSUMER: u32 = RTE_MEMPOOL_F_SC_GET;
 /// If set, allocated objects won't necessarily be contiguous in IO memory.
 pub const MEMPOOL_NO_IOVA_CONTIG: u32 = RTE_MEMPOOL_F_NO_IOVA_CONTIG;
 
-/// DPDK allocated objects.
+/// Objects allocated from a mempool.
+///
+/// In DPDK APIs, allocated objects are represented by pointers. So implementations should take care of
+/// the convertion between a `MempoolObj` instance and its pointer. Also, it is **strongly recommended**
+/// that `MempoolObj` should implement `Drop` trait, since an explicit call to DPDK API is needed to
+/// deallocate the memory.
 #[allow(clippy::module_name_repetitions)]
 pub trait MempoolObj: Sized {
-    /// Convert to pointer.
+    /// Takes the ownership of `self` and convert to pointer.
     fn into_raw(self) -> *mut c_void;
 
     /// Convert to object.
+    ///
+    /// # Errors
+    ///
+    /// The pointer provided is invalid.
     fn from_raw(ptr: *mut c_void) -> Result<Self>;
 }
 
-/// DPDK mempool allocator.
+/// Mempool is an allocator for fixed-sized objects and it is widely used in DPDK. For more
+/// information, please refer to [`dpdk mempool docs`].
+///
+/// This trait allow users to define their own allocators. Also, it is **strongly recommanded**
+/// that `Drop` trait should be implemented for `Mempool`s, since an explicit call is needed to
+/// deallocate mempool resources.
+///
+/// [`dpdk mempool docs`]: https://doc.dpdk.org/guides/prog_guide/mempool_lib.html
 pub trait Mempool<T: MempoolObj>: Sized {
-    /// Create a new instance.
+    /// Create a new instance of `Mempool`.
+    ///
+    /// A name identifying the instance and capacity are needed. Implementations should call DPDK
+    /// APIs such as `rte_mempool_create` and `rte_mempool_create_empty`.
+    ///
+    /// # Errors
+    ///
+    /// Possible errors:
+    ///
+    /// - No approporiate memory area left.
+    /// - Called from a secondary process.
+    /// - Cache size provided is too large.
+    /// - A memzone with the same name already exists.
+    /// - The maximum number of memzones has already been allocated.
     fn create(
         name: &str,
         size: u32,
-        item_size: u32,
+        obj_size: u32,
         cache_size: u32,
         private_data_size: u32,
         socket_id: i32,
@@ -64,24 +97,32 @@ pub trait Mempool<T: MempoolObj>: Sized {
     ) -> Result<Self>;
 
     /// Get a mempool instance using name.
+    ///
+    /// # Errors
+    ///
+    /// This function could returns an error if the name does not match to any mempool.
     fn lookup(name: &str) -> Result<Self>;
 
-    /// Allocate an item from mempool.
+    /// Allocate an object from mempool.
+    ///
+    /// # Errors
+    ///
+    /// This function could returns an error if the mempool is out of memory.
     fn get(&self) -> Result<T>;
 
-    /// Deallocate an item.
-    fn put(&self, item: T);
+    /// Deallocate an object.
+    fn put(&self, object: T);
 
-    /// Available elements
+    /// Number of available objects.
     fn available(&self) -> u32;
 
-    /// Elements in use.
+    /// Number of objects in use.
     fn in_use(&self) -> u32;
 
-    /// The mempool is empty.
+    /// Whether the mempool is empty.
     fn is_empty(&self) -> bool;
 
-    /// The mempool is full.
+    /// Whether the mempool is full.
     fn is_full(&self) -> bool;
 }
 
@@ -108,7 +149,7 @@ where
     fn create(
         name: &str,
         size: u32,
-        item_size: u32,
+        obj_size: u32,
         cache_size: u32,
         private_data_size: u32,
         socket_id: i32,
@@ -118,7 +159,7 @@ where
         let inner = MempoolInner::create(
             &name,
             size,
-            item_size,
+            obj_size,
             cache_size,
             private_data_size,
             socket_id,
@@ -152,8 +193,8 @@ where
     }
 
     #[inline]
-    fn put(&self, item: T) {
-        self.inner.put(item.into_raw());
+    fn put(&self, object: T) {
+        self.inner.put(object.into_raw());
     }
 
     #[must_use]
@@ -185,6 +226,7 @@ where
     T: Default + MempoolObj,
 {
     /// Get several objects from the mempool.
+    #[allow(clippy::missing_errors_doc)]
     #[inline]
     pub fn get_bulk(&self, n: u32) -> Result<Vec<Box<T>>> {
         let vec = self.inner.get_bulk(n)?;
@@ -222,7 +264,7 @@ impl Mempool<Mbuf> for PktMempool {
     fn create(
         name: &str,
         size: u32,
-        _item_size: u32,
+        _obj_size: u32,
         cache_size: u32,
         private_data_size: u32,
         socket_id: i32,
@@ -260,11 +302,11 @@ impl Mempool<Mbuf> for PktMempool {
     }
 
     #[inline]
-    fn put(&self, item: Mbuf) {
+    fn put(&self, object: Mbuf) {
         // SAFETY: ffi
         #[allow(unsafe_code)]
         unsafe {
-            rte_pktmbuf_free(item.as_ptr());
+            rte_pktmbuf_free(object.as_ptr());
         }
     }
 

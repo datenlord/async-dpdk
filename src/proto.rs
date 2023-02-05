@@ -1,23 +1,22 @@
-//! Protocol trait
+//! Protocols supported in this lib.
+
+#![doc(hidden)]
 
 use dpdk_sys::{
     RTE_PTYPE_L2_ETHER, RTE_PTYPE_L3_IPV4, RTE_PTYPE_L3_IPV6, RTE_PTYPE_L4_TCP, RTE_PTYPE_L4_UDP,
     RTE_PTYPE_UNKNOWN,
 };
 
-/// Indicating that the struct is a protocol.
+/// Indicating that the struct is a packet for some protocol.
 pub(crate) trait Protocol {
     /// Protocol header length.
     fn length(&self) -> u16;
 }
 
-// /// UDP `proto_id`, to be populated in IP header.
-// pub(crate) const IP_NEXT_PROTO_UDP: u8 = 0x11;
-
 /// Ethernet header length.
 pub(crate) const ETHER_HDR_LEN: u16 = 14;
 
-/// Ether proto number, to be populated in `rte_mbuf`.
+/// Ethernet proto number, to be populated in `rte_mbuf`.
 pub(crate) const PTYPE_L2_ETHER: u32 = RTE_PTYPE_L2_ETHER;
 
 #[repr(u32)]
@@ -47,11 +46,9 @@ impl From<u32> for L3Protocol {
     #[inline]
     fn from(num: u32) -> L3Protocol {
         match num {
-            RTE_PTYPE_UNKNOWN => L3Protocol::Unknown,
             RTE_PTYPE_L3_IPV4 => L3Protocol::Ipv4,
             RTE_PTYPE_L3_IPV6 => L3Protocol::Ipv6,
-            #[allow(clippy::unimplemented)]
-            _ => unimplemented!("unknown l3 protocol number {num}"),
+            _ => L3Protocol::Unknown,
         }
     }
 }
@@ -83,11 +80,9 @@ impl From<u32> for L4Protocol {
     #[inline]
     fn from(num: u32) -> L4Protocol {
         match num {
-            RTE_PTYPE_UNKNOWN => L4Protocol::Unknown,
             RTE_PTYPE_L4_UDP => L4Protocol::Udp,
             RTE_PTYPE_L4_TCP => L4Protocol::Tcp,
-            #[allow(clippy::unimplemented)]
-            _ => unimplemented!("unknown l4 protocol number {num}"),
+            _ => L4Protocol::Unknown,
         }
     }
 }
