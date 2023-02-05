@@ -7,7 +7,7 @@
 //! currently uses just two cache lines, with the most frequently used fields being on the first
 //! of the two cache lines.
 
-use crate::mempool::{MempoolInner, MempoolObj, PktMempool};
+use crate::mempool::{MempoolObj, MempoolRef, PktMempool};
 use crate::{Error, Result};
 use dpdk_sys::{
     cstring, rte_mbuf, rte_mbuf_buf_addr, rte_pktmbuf_adj, rte_pktmbuf_alloc,
@@ -127,7 +127,7 @@ impl Mbuf {
                 socket_id,
             )
         };
-        let inner = MempoolInner::new(ptr)?;
+        let inner = MempoolRef::new(ptr)?;
         Ok(PktMempool::new(inner))
     }
 
