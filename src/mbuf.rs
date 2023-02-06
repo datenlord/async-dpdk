@@ -9,18 +9,9 @@ use dpdk_sys::{
     rte_pktmbuf_append, rte_pktmbuf_chain, rte_pktmbuf_clone, rte_pktmbuf_free,
     rte_pktmbuf_headroom, rte_pktmbuf_prepend, rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
+use std::mem::size_of;
 use std::os::raw::c_void;
 use std::{mem::MaybeUninit, ptr::NonNull, slice};
-
-/// In this crate we use usize as length for convenience, however DPDK use u16 to represent
-/// length. Check the `len` argument is not too large for u16.
-macro_rules! check_len {
-    ($len:expr) => {
-        if $len < u16::MAX as usize {
-            return Err(Error::InvalidArg);
-        }
-    };
-}
 
 /// `Mbuf` is used to hold network packets, and it also carries some information about protocols,
 /// length, etc, for classification. `Mbuf`s are allocated from a `Mempool`.
@@ -55,6 +46,10 @@ impl MempoolObj for Mbuf {
     #[inline]
     fn from_raw(ptr: *mut c_void) -> Result<Self> {
         Self::new_with_ptr(ptr.cast())
+    }
+    #[inline]
+    fn obj_size() -> usize {
+        size_of::<rte_mbuf>()
     }
 }
 
@@ -201,14 +196,12 @@ impl Mbuf {
     /// without modifying the `Mbuf`.
     #[inline]
     pub fn prepend(&mut self, len: usize) -> Result<&mut [u8]> {
-        check_len!(len);
         // SAFETY: ffi
         let data = unsafe {
-            #[allow(clippy::cast_possible_truncation)] // checked
-            rte_pktmbuf_prepend(self.as_ptr(), len as _).cast::<u8>()
+            rte_pktmbuf_prepend(self.as_ptr(), len.try_into().map_err(Error::from)?).cast::<u8>()
         };
         if data.is_null() {
-            return Err(Error::InvalidArg);
+            return Err(Error::NoMem);
         }
         // SAFETY: memory is valid since data is not null
         unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
@@ -224,14 +217,12 @@ impl Mbuf {
     /// without modifying the `Mbuf`.
     #[inline]
     pub fn append(&mut self, len: usize) -> Result<&mut [u8]> {
-        check_len!(len);
         // SAFETY: ffi
         let data = unsafe {
-            #[allow(clippy::cast_possible_truncation)] // checked
-            rte_pktmbuf_append(self.as_ptr(), len as _).cast::<u8>()
+            rte_pktmbuf_append(self.as_ptr(), len.try_into().map_err(Error::from)?).cast::<u8>()
         };
         if data.is_null() {
-            return Err(Error::InvalidArg);
+            return Err(Error::NoMem);
         }
         // SAFETY: memory is initialzed
         unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
@@ -246,11 +237,9 @@ impl Mbuf {
     /// will fail with the `Mbuf` unchanged.
     #[inline]
     pub fn adj(&mut self, len: usize) -> Result<()> {
-        check_len!(len);
         // SAFETY: ffi
         let data = unsafe {
-            #[allow(clippy::cast_possible_truncation)] // checked
-            rte_pktmbuf_adj(self.as_ptr(), len as _).cast::<u8>()
+            rte_pktmbuf_adj(self.as_ptr(), len.try_into().map_err(Error::from)?).cast::<u8>()
         };
         if data.is_null() {
             Err(Error::InvalidArg)
@@ -267,12 +256,8 @@ impl Mbuf {
     /// with the `Mbuf` unchanged.
     #[inline]
     pub fn trim(&mut self, len: usize) -> Result<()> {
-        check_len!(len);
         // SAFETY: ffi
-        let res = unsafe {
-            #[allow(clippy::cast_possible_truncation)] // checked
-            rte_pktmbuf_trim(self.as_ptr(), len as _)
-        };
+        let res = unsafe { rte_pktmbuf_trim(self.as_ptr(), len.try_into().map_err(Error::from)?) };
         if res == 0 {
             Ok(())
         } else {
@@ -331,7 +316,7 @@ impl Drop for Mbuf {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
     use crate::eal::{self, IovaMode};
     use crate::mbuf::Mbuf;
     use crate::mempool::{Mempool, PktMempool};
@@ -345,25 +330,44 @@ mod test {
         let mut mbuf = Mbuf::new(&mp).unwrap();
         assert!(mbuf.is_contiguous());
         assert_eq!(mbuf.data_len(), 0);
+        assert_eq!(mbuf.num_segs(), 1);
+        assert_eq!(mbuf.headroom(), 0);
+        assert_eq!(mbuf.tailroom(), 2176);
 
         // Read and write from mbuf.
         let data = mbuf.append(10).unwrap();
         data.copy_from_slice(&[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         assert_eq!(mbuf.data_len(), 10);
         assert_eq!(mbuf.data_slice(), &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
+        let data = mbuf.prepend(5).unwrap();
+        data.copy_from_slice(&[4, 3, 2, 1, 0]);
+        assert_eq!(mbuf.data_len(), 15);
+        assert_eq!(
+            mbuf.data_slice(),
+            &[4, 3, 2, 1, 0, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+        );
+
+        mbuf.adj(5).unwrap();
+        assert_eq!(mbuf.data_len(), 10);
+        assert_eq!(mbuf.data_slice(), &[0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+
         mbuf.trim(5).unwrap();
         assert_eq!(mbuf.data_len(), 5);
         assert_eq!(mbuf.data_slice(), &[0, 1, 2, 3, 4]);
 
         // Mbuf chaining.
-        let mut mbuf1 = Mbuf::new(&mp).unwrap();
-        let _ = mbuf1.append(5).unwrap();
-        mbuf.chain(mbuf1).unwrap();
-        assert_eq!(mbuf.num_segs(), 2);
-        assert_eq!(mbuf.pkt_len(), 10);
+        let mbufs = Mbuf::new_bulk(&mp, 2).unwrap();
+        for mut m in mbufs.into_iter() {
+            let _ = m.append(5).unwrap();
+            mbuf.chain(m).unwrap();
+        }
+        assert_eq!(mbuf.num_segs(), 3);
+        assert_eq!(mbuf.pkt_len(), 15);
 
         // Indirect mbuf.
         let mbuf2 = mbuf.clone(&mp).unwrap();
         assert_eq!(mbuf2.data_slice(), &[0, 1, 2, 3, 4]);
+        assert_eq!(mbuf2.num_segs(), 3);
     }
 }

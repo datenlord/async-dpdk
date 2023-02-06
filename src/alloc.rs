@@ -41,12 +41,11 @@ pub fn malloc<T: Default>() -> Box<T> {
 /// as the core that calls this function.
 #[inline]
 #[must_use]
-pub fn zmalloc<T: Default>() -> Box<T> {
+pub fn zmalloc<T>() -> Box<T> {
     // SAFETY: ffi
     #[allow(unsafe_code)]
     unsafe {
         let ptr = rte_zmalloc(ptr::null(), mem::size_of::<T>(), 0);
-        *ptr.cast::<T>() = T::default();
         Box::from_raw(ptr.cast())
     }
 }
@@ -67,12 +66,11 @@ pub fn malloc_socket<T: Default>(socket: i32) -> Box<T> {
 /// Allocate zeroed memory from hugepages on specific socket.
 #[inline]
 #[must_use]
-pub fn zmalloc_socket<T: Default>(socket: i32) -> Box<T> {
+pub fn zmalloc_socket<T>(socket: i32) -> Box<T> {
     // SAFETY: ffi
     #[allow(unsafe_code)]
     unsafe {
         let ptr = rte_zmalloc_socket(ptr::null(), mem::size_of::<T>(), 0, socket);
-        *ptr.cast::<T>() = T::default();
         Box::from_raw(ptr.cast())
     }
 }
@@ -99,25 +97,49 @@ pub unsafe fn free<T>(obj: Box<T>) {
 #[cfg(test)]
 mod tests {
     use crate::alloc;
-    use crate::eal::{self, IovaMode};
+    use crate::eal::{self, IovaMode, LogLevel};
 
     #[test]
     fn test() {
-        #[derive(Default)]
+        #[repr(C)]
         struct Test {
             x: i32,
             y: i64,
         }
+        impl Default for Test {
+            fn default() -> Self {
+                Self { x: 1, y: 2 }
+            }
+        }
 
-        eal::Config::new().iova_mode(IovaMode::VA).enter().unwrap();
+        eal::Config::new()
+            .log_level(LogLevel::Debug)
+            .iova_mode(IovaMode::VA)
+            .enter()
+            .unwrap();
 
-        let t = alloc::malloc::<Test>();
-        assert_eq!(t.x, 0);
-        assert_eq!(t.y, 0);
+        let t1 = alloc::malloc::<Test>();
+        assert_eq!(t1.x, 1);
+        assert_eq!(t1.y, 2);
+
+        let t2 = alloc::zmalloc::<Test>();
+        assert_eq!(t2.x, 0);
+        assert_eq!(t2.y, 0);
+
+        let t3 = alloc::malloc_socket::<Test>(0);
+        assert_eq!(t3.x, 1);
+        assert_eq!(t3.y, 2);
+
+        let t4 = alloc::zmalloc_socket::<Test>(0);
+        assert_eq!(t4.x, 0);
+        assert_eq!(t4.y, 0);
 
         #[allow(unsafe_code)]
         unsafe {
-            alloc::free(t);
+            alloc::free(t1);
+            alloc::free(t2);
+            alloc::free(t3);
+            alloc::free(t4);
         }
     }
 }

@@ -13,6 +13,7 @@ fn main() {
     let mp = PktMempool::create("pktmbuf", 512).unwrap();
     // Allocate a `Mbuf` from the `Mempool`.
     let mut mbuf = Mbuf::new(&mp).unwrap();
+    println!("head {}, tail {}", mbuf.headroom(), mbuf.tailroom());
     // Append 10 bytes to `Mbuf`.
     let data = mbuf.append(10).unwrap();
     // Write to `Mbuf`.

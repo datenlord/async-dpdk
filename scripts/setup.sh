@@ -3,8 +3,7 @@
 if [ "$1" == "setup" ]; then
     mkdir -p /dev/hugepages
     mountpoint -q /dev/hugepages || mount -t hugetlbfs nodev /dev/hugepages
-    echo 1 > /sys/devices/system/node/node0/hugepages/hugepages-1048576kB/nr_hugepages
-
+    echo 32 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
     modprobe e1000 vfio vfio-pci
     
     chmod 600 /sys/bus/pci/drivers/e1000/bind

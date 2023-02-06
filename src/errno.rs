@@ -4,6 +4,7 @@ use dpdk_sys::{errno, rte_exit, rte_strerror};
 use std::{
     ffi::{IntoStringError, NulError},
     net::AddrParseError,
+    num::TryFromIntError,
     os::raw::c_int,
     sync::PoisonError,
 };
@@ -198,6 +199,13 @@ impl From<AddrParseError> for Error {
 impl From<IntoStringError> for Error {
     #[inline]
     fn from(_error: IntoStringError) -> Self {
+        Error::InvalidArg
+    }
+}
+
+impl From<TryFromIntError> for Error {
+    #[inline]
+    fn from(_error: TryFromIntError) -> Self {
         Error::InvalidArg
     }
 }

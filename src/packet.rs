@@ -133,3 +133,63 @@ impl Packet {
         Ok(mbuf)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Packet;
+    use crate::{
+        mbuf::Mbuf,
+        mempool::{Mempool, PktMempool},
+        proto::{L3Protocol, L4Protocol},
+    };
+    use bytes::BytesMut;
+
+    #[test]
+    fn test() {
+        let mut pkt = Packet::new(L3Protocol::Ipv4, L4Protocol::Tcp);
+        pkt.append(BytesMut::new());
+        assert_eq!(pkt.frags.len(), 1);
+
+        let mp = PktMempool::create("pktmpool", 10).unwrap();
+        let mut mb1 = Mbuf::new(&mp).unwrap();
+        let data = mb1.append(5).unwrap();
+        data.copy_from_slice(&[0, 1, 2, 3, 4]);
+
+        // Test conversion between mbuf and packet.
+        let pkt = Packet::from_mbuf(mb1);
+        assert_eq!(pkt.frags.len(), 1);
+        assert_eq!(&pkt.frags[0][..], &[0, 1, 2, 3, 4]);
+
+        let mb2 = pkt.into_mbuf(&mp).unwrap();
+        assert_eq!(mb2.num_segs(), 1);
+        assert_eq!(mb2.data_slice(), &[0, 1, 2, 3, 4]);
+
+        // Test conversion betweem chained mbuf and packet.
+        let mut mbs = Mbuf::new_bulk(&mp, 3).unwrap();
+        for (i, m) in mbs.iter_mut().enumerate() {
+            let data = m.append(5).unwrap();
+            let i = i as u8;
+            data.copy_from_slice(&[i, i, i, i, i]);
+        }
+        let tail2 = mbs.pop().unwrap();
+        let mut tail1 = mbs.pop().unwrap();
+        tail1.chain(tail2).unwrap();
+        let mut mb3 = mbs.pop().unwrap();
+        mb3.chain(tail1).unwrap();
+
+        let pkt = Packet::from_mbuf(mb3);
+        assert_eq!(pkt.frags.len(), 3);
+        assert_eq!(&pkt.frags[0][..], &[0, 0, 0, 0, 0]);
+        assert_eq!(&pkt.frags[1][..], &[1, 1, 1, 1, 1]);
+        assert_eq!(&pkt.frags[2][..], &[2, 2, 2, 2, 2]);
+
+        let mb4 = pkt.into_mbuf(&mp).unwrap();
+        assert_eq!(mb4.num_segs(), 3);
+        assert_eq!(mb4.data_slice(), &[0, 0, 0, 0, 0]);
+        assert_eq!(mb4.next().unwrap().data_slice(), &[1, 1, 1, 1, 1]);
+        assert_eq!(
+            mb4.next().unwrap().next().unwrap().data_slice(),
+            &[2, 2, 2, 2, 2]
+        );
+    }
+}

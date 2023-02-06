@@ -237,6 +237,17 @@ impl Config {
         self
     }
 
+    /// Disable hugepages. Required to run without root.
+    #[inline]
+    #[must_use]
+    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
+    pub fn no_hugepages(mut self, no_huge: bool) -> Self {
+        if no_huge {
+            self.args.push(CString::new("--no-pci").unwrap());
+        }
+        self
+    }
+
     /// Reserved memory on start in megabytes.
     #[inline]
     #[must_use]
@@ -307,9 +318,11 @@ impl Config {
         // SAFETY: ffi
         #[allow(unsafe_code)]
         let ret = unsafe {
-            #[allow(clippy::cast_possible_truncation, clippy::cast_possible_wrap)]
             // arg length checked
-            rte_eal_init(pargs.len() as _, pargs.as_mut_ptr())
+            rte_eal_init(
+                pargs.len().try_into().map_err(Error::from)?,
+                pargs.as_mut_ptr(),
+            )
         };
         if ret < 0 {
             error!("Error initializing DPDK environment");

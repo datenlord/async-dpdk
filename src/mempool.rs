@@ -18,7 +18,6 @@ use std::{
     ffi::CString,
     fmt::Debug,
     marker::PhantomData,
-    mem::size_of,
     os::raw::c_void,
     ptr::{self, NonNull},
     sync::Mutex,
@@ -46,6 +45,9 @@ pub trait MempoolObj: Sized {
     ///
     /// The pointer provided is invalid.
     fn from_raw(ptr: *mut c_void) -> Result<Self>;
+
+    /// Size of the object.
+    fn obj_size() -> usize;
 }
 
 /// Mempool is an allocator for fixed-sized objects and it is widely used in DPDK. For more
@@ -201,8 +203,7 @@ where
     #[inline]
     pub fn new(name: &str, size: u32, cache_size: u32, priv_size: u32) -> Result<Self> {
         let name = CString::new(name).map_err(Error::from)?;
-        #[allow(clippy::cast_possible_truncation)]
-        let obj_size = size_of::<T>() as u32;
+        let obj_size = T::obj_size().try_into().map_err(Error::from)?;
         let socket_id = lcore::socket_id();
 
         // SAFETY: ffi
@@ -461,7 +462,8 @@ impl Drop for MempoolRef {
 }
 
 #[cfg(test)]
-mod test {
+mod tests {
+    use std::mem;
     use std::os::raw::c_void;
     use std::ptr;
 
@@ -470,36 +472,53 @@ mod test {
 
     use super::MempoolObj;
 
+    #[repr(C)]
     struct SomeType {
-        ptr: *mut c_void,
+        x: u64,
+        y: u64,
+        d: [u32; 10],
     }
-    impl Default for SomeType {
+    struct SomePtr {
+        ptr: *mut SomeType,
+    }
+    impl Default for SomePtr {
         fn default() -> Self {
             Self {
                 ptr: ptr::null_mut(),
             }
         }
     }
-    impl MempoolObj for SomeType {
+    impl MempoolObj for SomePtr {
         fn into_raw(self) -> *mut c_void {
-            self.ptr
+            self.ptr.cast()
         }
         fn from_raw(ptr: *mut c_void) -> crate::Result<Self> {
-            Ok(Self { ptr })
+            Ok(Self { ptr: ptr.cast() })
+        }
+        fn obj_size() -> usize {
+            mem::size_of::<SomeType>()
         }
     }
 
     #[test]
     fn test() {
         let _ = eal::Config::new().iova_mode(IovaMode::VA).enter();
-        let mp: GenericMempool<SomeType> = GenericMempool::create("mempool", 64).unwrap();
+        let mp: GenericMempool<SomePtr> = GenericMempool::create("mempool", 64).unwrap();
         assert!(mp.is_full());
+        assert!(!mp.is_empty());
         assert_eq!(mp.in_use(), 0);
         assert_eq!(mp.available(), 64);
 
-        let mp1: GenericMempool<SomeType> = GenericMempool::lookup("mempool").unwrap();
+        let mp1: GenericMempool<SomePtr> = GenericMempool::lookup("mempool").unwrap();
         assert!(mp1.is_full());
         assert_eq!(mp1.in_use(), 0);
         assert_eq!(mp1.available(), 64);
+
+        let obj = mp.get().unwrap();
+        assert_eq!(mp1.in_use(), 1);
+        assert_eq!(mp1.available(), 63);
+
+        mp.put(obj);
+        assert!(mp1.is_full());
     }
 }
