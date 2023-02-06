@@ -1,19 +1,13 @@
 //! The mbuf library provides the ability to allocate and free buffers (mbufs) that may be used
 //! by the DPDK application to store message buffers. The message buffers are stored in a mempool,
 //! using the Mempool Library.
-//!
-//! A `rte_mbuf` struct generally carries network packet buffers, but it can actually be any data
-//! (control data, events, …). The `rte_mbuf` header structure is kept as small as possible and
-//! currently uses just two cache lines, with the most frequently used fields being on the first
-//! of the two cache lines.
 
-use crate::mempool::{MempoolObj, MempoolRef, PktMempool};
+use crate::mempool::{MempoolObj, PktMempool};
 use crate::{Error, Result};
 use dpdk_sys::{
-    cstring, rte_mbuf, rte_mbuf_buf_addr, rte_pktmbuf_adj, rte_pktmbuf_alloc,
-    rte_pktmbuf_alloc_bulk, rte_pktmbuf_append, rte_pktmbuf_chain, rte_pktmbuf_clone,
-    rte_pktmbuf_free, rte_pktmbuf_headroom, rte_pktmbuf_pool_create, rte_pktmbuf_prepend,
-    rte_pktmbuf_tailroom, rte_pktmbuf_trim, RTE_MBUF_DEFAULT_BUF_SIZE,
+    rte_mbuf, rte_mbuf_buf_addr, rte_pktmbuf_adj, rte_pktmbuf_alloc, rte_pktmbuf_alloc_bulk,
+    rte_pktmbuf_append, rte_pktmbuf_chain, rte_pktmbuf_clone, rte_pktmbuf_free,
+    rte_pktmbuf_headroom, rte_pktmbuf_prepend, rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
 use std::os::raw::c_void;
 use std::{mem::MaybeUninit, ptr::NonNull, slice};
@@ -28,20 +22,23 @@ macro_rules! check_len {
     };
 }
 
-/// `Mbuf` is used to hold messages, and also carries some information about protocols,
-/// length, etc, for classification. The message buffers are stored in a `Mempool`.
+/// `Mbuf` is used to hold network packets, and it also carries some information about protocols,
+/// length, etc, for classification. `Mbuf`s are allocated from a `Mempool`.
 ///
-/// `Mbuf` is a safe wrapper of `rte_mbuf`, whose memory layout is:
+/// `Mbuf` is a safe wrapper of `rte_mbuf`, the original packet carrier in DPDK, whose memory
+/// layout is:
 ///
+/// ```
 ///     ---------------------------------------------------------------------------------
-///     | `rte_mbuf` | priv data | head room |          frame data          | tail room |
+///     |  rte_mbuf  | priv data | head room |          frame data          | tail room |
 ///     ---------------------------------------------------------------------------------
 ///     ^                        ^
-///     *`rte_mbuf`              *`buf_addr`
+///     * rte_mbuf               * buf_addr
 ///                              <-data_off-><-----------data_len----------->
 ///                              <------------------------buf_len----------------------->
+/// ```
 ///
-/// There's a contiguous slice of memory in `rte_mbuf` to hold frame data. To hold packets
+/// There's a contiguous slice of memory in `rte_mbuf` to hold frame data. To carry packets
 /// with arbitrary lengths, `rte_mbuf`s can be chained together as a linked list.
 #[derive(Debug)]
 #[allow(missing_copy_implementations)]
@@ -63,12 +60,12 @@ impl MempoolObj for Mbuf {
 
 #[allow(unsafe_code)]
 impl Mbuf {
-    /// Get a `Mbuf` instance with pointer to `rte_mbuf`.
+    /// Get an `Mbuf` instance with pointer to `rte_mbuf`.
     pub(crate) fn new_with_ptr(ptr: *mut rte_mbuf) -> Result<Self> {
         NonNull::new(ptr).map_or(Err(Error::NoMem), |mb| Ok(Self { mb }))
     }
 
-    /// Allocate an uninitialized mbuf from mempool.
+    /// Allocate an uninitialized `Mbuf` from mempool.
     ///
     /// # Errors
     ///
@@ -80,8 +77,7 @@ impl Mbuf {
         Self::new_with_ptr(ptr)
     }
 
-    /// Allocate a bulk of mbufs, initialize reference count and reset the fields
-    /// to default values.
+    /// Allocate a bulk of `Mbuf`s, initialize reference count and reset the fields to default values.
     ///
     /// # Errors
     ///
@@ -108,30 +104,7 @@ impl Mbuf {
         Ok(v)
     }
 
-    /// Create a mbuf pool. This function creates and initializes a packet mbuf pool.
-    ///
-    /// # Errors
-    ///
-    /// This function returns an error if the allocation of a `Mempool` fails.
-    #[inline]
-    pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: i32) -> Result<PktMempool> {
-        // SAFETY: ffi
-        let ptr = unsafe {
-            #[allow(clippy::cast_possible_truncation)] // 0x880 < u16::MAX
-            rte_pktmbuf_pool_create(
-                cstring!(name),
-                n,
-                cache_size,
-                0,
-                RTE_MBUF_DEFAULT_BUF_SIZE as u16,
-                socket_id,
-            )
-        };
-        let inner = MempoolRef::new(ptr)?;
-        Ok(PktMempool::new(inner))
-    }
-
-    /// Get the data length of a mbuf.
+    /// Get the data length of an `Mbuf`.
     #[inline]
     #[must_use]
     pub fn data_len(&self) -> usize {
@@ -139,7 +112,7 @@ impl Mbuf {
         unsafe { (*self.as_ptr()).data_len as usize }
     }
 
-    /// Get the packet length of a mbuf.
+    /// Get the packet length of an `Mbuf`.
     #[inline]
     #[must_use]
     pub fn pkt_len(&self) -> usize {
@@ -147,7 +120,7 @@ impl Mbuf {
         unsafe { (*self.as_ptr()).pkt_len as usize }
     }
 
-    /// Get the number of segments of a mbuf.
+    /// Get the number of segments of a `Mbuf`.
     #[inline]
     #[must_use]
     pub fn num_segs(&self) -> u32 {
@@ -155,7 +128,7 @@ impl Mbuf {
         unsafe { u32::from((*self.as_ptr()).nb_segs) }
     }
 
-    /// Get the headroom in a packet mbuf.
+    /// Get the headroom in an `Mbuf`.
     #[inline]
     #[must_use]
     pub fn headroom(&self) -> usize {
@@ -163,7 +136,7 @@ impl Mbuf {
         unsafe { rte_pktmbuf_headroom(self.as_ptr()) as usize }
     }
 
-    /// Get the tailroom of a packet mbuf.
+    /// Get the tailroom of an `Mbuf`.
     #[inline]
     #[must_use]
     pub fn tailroom(&self) -> usize {
@@ -171,12 +144,10 @@ impl Mbuf {
         unsafe { rte_pktmbuf_tailroom(self.as_ptr()) as usize }
     }
 
-    /// Create a "clone" of the given packet mbuf.
+    /// Create a "clone" of the given packet `Mbuf`.
     ///
-    /// Walks through all segments of the given packet mbuf, and for each of them:
-    /// - Creates a new packet mbuf from the given pool.
-    /// - Attaches newly created mbuf to the segment. Then updates `pkt_len` and `nb_segs`
-    ///    of the "clone" packet mbuf to match values from the original packet mbuf.
+    /// New `Mbuf`s are allocated from the given `PktMempool`, and populated with the same content
+    /// as ths original `Mbuf`.
     ///
     /// # Errors
     ///
@@ -196,11 +167,8 @@ impl Mbuf {
         unsafe { (*self.as_ptr()).nb_segs == 1 }
     }
 
-    /// Return address of buffer embedded in the given mbuf.
-    ///
-    /// The return value shall be same as mb->buf_addr if the mbuf is already initialized
-    /// and direct. However, this API is useful if mempool of the mbuf is already known
-    /// because it doesn't need to access mbuf contents in order to get the mempool pointer.
+    /// Return immutable reference of the valid content, which starts at `buf_addr + data_off` with the
+    /// length of `data_len`, embedded in the given `Mbuf`.
     #[inline]
     #[must_use]
     pub fn data_slice(&self) -> &[u8] {
@@ -212,7 +180,7 @@ impl Mbuf {
         }
     }
 
-    /// Return address of buffer embedded in the given mbuf.
+    /// Return mutable reference of the valid content embedded in the given `Mbuf`.
     #[inline]
     pub fn data_slice_mut(&mut self) -> &mut [u8] {
         let m = self.as_ptr();
@@ -223,9 +191,9 @@ impl Mbuf {
         }
     }
 
-    /// Prepend len bytes to an mbuf data area.
+    /// Prepend `len` bytes to an `Mbuf` data area.
     ///
-    /// Returns a pointer to the new data start address.
+    /// Returns a mutable reference to the start address of the added data.
     ///
     /// # Errors
     ///
@@ -246,8 +214,9 @@ impl Mbuf {
         unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
     }
 
-    /// Append len bytes to an mbuf. Append len bytes to an mbuf and return a pointer
-    /// to the start address of the added data.
+    /// Append `len` bytes to an `Mbuf`.
+    ///
+    /// Return a mutable reference to the start address of the added data.
     ///
     /// # Errors
     ///
@@ -268,7 +237,7 @@ impl Mbuf {
         unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
     }
 
-    /// Remove len bytes at the beginning of an mbuf. Returns a pointer to the start
+    /// Remove `len` bytes at the beginning of an `Mbuf`. Returns a pointer to the start
     /// address of the new data area.
     ///
     /// # Errors
@@ -290,7 +259,7 @@ impl Mbuf {
         }
     }
 
-    /// Remove len bytes of data at the end of the mbuf.
+    /// Remove `len` bytes of data at the end of the `Mbuf`.
     ///
     /// # Errors
     ///
@@ -321,14 +290,16 @@ impl Mbuf {
     /// The chain segment limit exceeded.
     #[inline]
     #[allow(clippy::needless_pass_by_value)] // the ownership of the last one should be taken
-    pub fn chain(&mut self, tail: Mbuf) -> Result<()> {
+    pub fn chain(&mut self, tail: Mbuf) -> std::result::Result<(), (Error, Mbuf)> {
         // SAFETY: ffi
         let errno = unsafe { rte_pktmbuf_chain(self.as_ptr(), tail.as_ptr()) };
-        Error::from_ret(errno)?;
+        if let Err(err) = Error::from_ret(errno) {
+            return Err((err, tail));
+        }
         Ok(())
     }
 
-    /// Get the next Mbuf chained.
+    /// Get the next `Mbuf` chained.
     #[must_use]
     #[inline]
     pub fn next(&self) -> Option<Mbuf> {
@@ -362,15 +333,15 @@ impl Drop for Mbuf {
 #[cfg(test)]
 mod test {
     use crate::eal::{self, IovaMode};
-    use crate::lcore;
     use crate::mbuf::Mbuf;
+    use crate::mempool::{Mempool, PktMempool};
 
     #[test]
     fn test() {
         let _ = eal::Config::new().iova_mode(IovaMode::VA).enter();
 
         // Create a packet mempool.
-        let mp = Mbuf::create_mp("test", 10, 0, lcore::socket_id()).unwrap();
+        let mp = PktMempool::create("test", 10).unwrap();
         let mut mbuf = Mbuf::new(&mp).unwrap();
         assert!(mbuf.is_contiguous());
         assert_eq!(mbuf.data_len(), 0);

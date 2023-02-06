@@ -138,8 +138,8 @@ where
     fn get(&self) -> Result<T> {
         let mut ptr = ptr::null_mut::<T>();
         // SAFETY: ffi
-        let errno = #[allow(trivial_casts, unsafe_code)]
-        unsafe {
+        #[allow(trivial_casts, unsafe_code)]
+        let errno = unsafe {
             rte_mempool_get(
                 self.inner.as_ptr(),
                 ptr::addr_of_mut!(ptr).cast::<*mut c_void>(),
@@ -232,7 +232,10 @@ where
     }
 
     /// Get several objects from the mempool.
-    #[allow(clippy::missing_errors_doc)]
+    ///
+    /// # Errors
+    ///
+    /// This function could returns an error if the mempool is out of memory.
     #[inline]
     pub fn get_bulk(&self, n: u32) -> Result<Vec<Box<T>>> {
         let mut ptrs = (0..n).map(|_| ptr::null_mut::<T>()).collect::<Vec<_>>();
@@ -278,9 +281,9 @@ impl Mempool<Mbuf> for PktMempool {
     #[inline]
     fn create(name: &str, size: u32) -> Result<Self> {
         let socket_id = lcore::socket_id();
-        #[allow(unsafe_code)]
-        let ptr = #[allow(clippy::cast_possible_truncation)]
-        unsafe {
+        // SAFETY: ffi
+        #[allow(unsafe_code, clippy::cast_possible_truncation)]
+        let ptr = unsafe {
             rte_pktmbuf_pool_create(
                 cstring!(name),
                 size,

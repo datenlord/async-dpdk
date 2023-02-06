@@ -137,7 +137,7 @@ impl Config {
     /// Create a new eal `Config` instance.
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)]
+    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
     pub fn new() -> Self {
         let env_args = std::env::args().collect::<Vec<_>>();
         Self {

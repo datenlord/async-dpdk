@@ -1,4 +1,4 @@
-//! async-dpdk
+//! async-dpdk is a wrapper of DPDK in safe Rust.
 
 #![deny(
     // The following are allowed by default lints according to
@@ -106,8 +106,6 @@
     clippy::verbose_file_reads,
     clippy::wildcard_enum_match_arm,
 )]
-// TODO add docs
-#![feature(stmt_expr_attributes)]
 
 pub use dpdk_sys::{eth_foreach_dev, lcore_foreach, lcore_foreach_worker};
 

@@ -90,7 +90,9 @@ impl Packet {
             while len > tail.tailroom() {
                 if tail.tailroom() == 0 {
                     if let Some(m) = head.as_mut() {
-                        m.chain(tail)?;
+                        if let Err((err, _)) = m.chain(tail) {
+                            return Err(err);
+                        }
                     } else {
                         head = Some(tail);
                     }
