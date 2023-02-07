@@ -12,7 +12,7 @@ repository = "https://github.com/datenlord/async-dpdk"
 
 [dependencies]
 bytes = "1.2.1"
-dpdk-sys = { git = "https://github.com/datenlord/dpdk-sys", rev = "febf1cc" }
+dpdk-sys = { git = "https://github.com/datenlord/dpdk-sys", rev = "2064d35" }
 lazy_static = "1.4"
 libc = "0.2"
 log = "0.4"

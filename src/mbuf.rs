@@ -170,7 +170,7 @@ impl Mbuf {
         // SAFETY: ffi; memory is initialized and valid
         unsafe {
             let data = rte_mbuf_buf_addr(m, (*m).pool).add((*m).data_off as _);
-            slice::from_raw_parts(data, (*m).data_len as _)
+            slice::from_raw_parts(data.cast::<u8>(), (*m).data_len as _)
         }
     }
 
