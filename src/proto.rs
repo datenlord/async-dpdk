@@ -13,6 +13,9 @@ pub(crate) trait Protocol {
     fn length(&self) -> u16;
 }
 
+/// UDP `proto_id`, to be populated in IP header.
+pub(crate) const IP_NEXT_PROTO_UDP: u8 = 0x11;
+
 /// Ethernet header length.
 pub(crate) const ETHER_HDR_LEN: u16 = 14;
 
