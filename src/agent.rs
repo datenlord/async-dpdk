@@ -1,7 +1,4 @@
-//! RX/TX agent thread, which polls queues in background.
-
-#![allow(dead_code)] // to be fixed in the next PR
-
+//! RX/TX agent thread
 use crate::mbuf::Mbuf;
 use crate::proto::{L3Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP};
 use crate::socket::{self, RecvResult};
@@ -50,11 +47,11 @@ const IP_FRAG_TABLE_BUCKET_SIZE: u32 = 16;
 /// or equal then `bucket_num` * `bucket_entries`.
 const IP_FRAG_TABLE_MAX_ENTRIES: u32 = 2048;
 
-/// An agent thread continuously receives.
+/// An agent thread doing receiving.
 pub(crate) struct RxAgent {
-    /// Whether the thread is running.
+    /// A bool indicating whether the thread is running.
     running: AtomicBool,
-    /// A set of queues to be polled.
+    /// A set of (`port_id`, `queue_id`) to be polled.
     tasks: Mutex<BTreeSet<(u16, u16)>>,
 }
 
@@ -296,7 +293,6 @@ impl RxAgent {
         let _handle = task::spawn_blocking(move || {
             let mut frag_tbl = IpFragmentTable::new(socket_id)?;
             let mut death_row = IpFragDeathRow::new(socket_id)?;
-
             while that.running.load(Ordering::Acquire) {
                 let tasks = that.tasks.lock().map_err(Error::from)?;
                 let task_iter = tasks.iter();
