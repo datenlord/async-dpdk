@@ -29,8 +29,6 @@ use tokio::sync::mpsc;
 /// It is identified with a `port_id`. Each `EthDev` has several tx queues and rx queues,
 /// which are polled by agent threads.
 ///
-/// # Life circle of `EthDev`s.
-///
 /// ```text
 ///     new         Configure the device then initialize tx/rx queues.
 ///      |
@@ -53,7 +51,7 @@ pub(crate) struct EthDev {
     tx_agent: Option<Arc<TxAgent>>,
     /// An agent rx thread if the device is started.
     rx_agent: Option<Arc<RxAgent>>,
-    /// `EthTxQueue` for each queue.
+    /// An agent tx thread if the device is started.
     tx_queue: Vec<Arc<EthTxQueue>>,
     /// `EthRxQueue` for each queue.
     rx_queue: Vec<Arc<EthRxQueue>>,
