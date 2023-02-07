@@ -25,7 +25,7 @@ use std::{
 };
 
 lazy_static! {
-    pub(crate) static ref MEMPOOLS: Mutex<HashMap<usize, Weak<MempoolRef>>> = Mutex::default();
+    static ref MEMPOOLS: Mutex<HashMap<usize, Weak<MpRef>>> = Mutex::default();
 }
 
 /// Objects allocated from a mempool.
@@ -112,7 +112,7 @@ where
     T: Default + MempoolObj,
 {
     /// An `Arc` pointer to `MempoolInner`.
-    inner: Arc<MempoolRef>,
+    inner: Arc<MpRef>,
     /// Placeholder for generic data type.
     _marker: PhantomData<T>,
 }
@@ -129,7 +129,7 @@ where
     #[inline]
     fn lookup(name: &str) -> Result<Self> {
         let name = CString::new(name).map_err(Error::from)?;
-        let inner = MempoolRef::lookup(&name)?;
+        let inner = MpRef::lookup(&name)?;
         Ok(Self {
             inner,
             _marker: PhantomData,
@@ -225,7 +225,7 @@ where
         };
 
         trace!("A mempool with {size} elements of {obj_size} created");
-        let inner = MempoolRef::new(ptr)?;
+        let inner = MpRef::new(ptr)?;
         Ok(Self {
             inner,
             _marker: PhantomData,
@@ -275,7 +275,7 @@ where
 #[derive(Debug)]
 pub struct PktMempool {
     /// Inner pointer.
-    inner: Arc<MempoolRef>,
+    inner: Arc<MpRef>,
 }
 
 impl Mempool<Mbuf> for PktMempool {
@@ -294,14 +294,14 @@ impl Mempool<Mbuf> for PktMempool {
                 socket_id,
             )
         };
-        let inner = MempoolRef::new(ptr)?;
+        let inner = MpRef::new(ptr)?;
         Ok(Self::new(inner))
     }
 
     #[inline]
     fn lookup(name: &str) -> Result<Self> {
         let name = CString::new(name).map_err(Error::from)?;
-        let inner = MempoolRef::lookup(&name)?;
+        let inner = MpRef::lookup(&name)?;
         Ok(Self { inner })
     }
 
@@ -352,7 +352,7 @@ impl PktMempool {
 
     /// Get a new instance of `Mempool`.
     #[inline]
-    pub(crate) fn new(inner: Arc<MempoolRef>) -> Self {
+    pub(crate) fn new(inner: Arc<MpRef>) -> Self {
         Self { inner }
     }
 }
@@ -362,28 +362,29 @@ impl PktMempool {
 /// Since `Mempool`s can be found using names, a `MempoolRef` can be held by several `Mempool`s.
 /// A global hash table storing `Weak` pointers is used to track the ref count of `Mempool`s.
 #[derive(Clone)]
-pub(crate) struct MempoolRef {
+pub struct MpRef {
     /// A pointer to `rte_mempool`.
     mp: NonNull<rte_mempool>,
 }
 
 // SAFETY: mempool can be globally accessed
 #[allow(unsafe_code)]
-unsafe impl Send for MempoolRef {}
+unsafe impl Send for MpRef {}
 
 // SAFETY: mempool can be globally accessed
 #[allow(unsafe_code)]
-unsafe impl Sync for MempoolRef {}
+unsafe impl Sync for MpRef {}
 
-impl Debug for MempoolRef {
+impl Debug for MpRef {
+    #[inline]
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Mempool").finish()
     }
 }
 
-impl MempoolRef {
+impl MpRef {
     /// Create a new `MempoolInner` instance with a pointer.
-    pub(crate) fn new(ptr: *mut rte_mempool) -> Result<Arc<Self>> {
+    fn new(ptr: *mut rte_mempool) -> Result<Arc<Self>> {
         let mp = NonNull::new(ptr).ok_or(Error::NoMem)?;
         let mp = Arc::new(Self { mp });
         let _prev = MEMPOOLS
@@ -451,7 +452,8 @@ impl MempoolRef {
     }
 }
 
-impl Drop for MempoolRef {
+impl Drop for MpRef {
+    #[inline]
     fn drop(&mut self) {
         // SAFETY: ffi
         #[allow(unsafe_code)]

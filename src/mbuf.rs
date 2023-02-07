@@ -9,12 +9,20 @@ use dpdk_sys::{
     rte_pktmbuf_append, rte_pktmbuf_chain, rte_pktmbuf_clone, rte_pktmbuf_free,
     rte_pktmbuf_headroom, rte_pktmbuf_prepend, rte_pktmbuf_tailroom, rte_pktmbuf_trim,
 };
-use std::mem::size_of;
-use std::os::raw::c_void;
-use std::{mem::MaybeUninit, ptr::NonNull, slice};
+use std::{
+    marker::PhantomData,
+    mem::{self, size_of, ManuallyDrop},
+    ops::{Deref, DerefMut},
+    os::raw::c_void,
+    ptr::{self, NonNull},
+    result::Result as StdResult,
+    slice,
+};
 
-/// `Mbuf` is used to hold network packets, and it also carries some information about protocols,
-/// length, etc, for classification. `Mbuf`s are allocated from a `Mempool`.
+/// `Mbuf` is used to hold network packets.
+///
+/// It also carries some information about protocols, length, etc, for packet classification.
+/// `Mbuf`s are allocated from a `Mempool`.
 ///
 /// `Mbuf` is a safe wrapper of `rte_mbuf`, the original packet carrier in DPDK, whose memory
 /// layout is:
@@ -72,28 +80,19 @@ impl Mbuf {
         Self::new_with_ptr(ptr)
     }
 
-    /// Allocate a bulk of `Mbuf`s, initialize reference count and reset the fields to default values.
+    /// Allocate a bulk of `Mbuf`s from the given `PktMempool`.
     ///
     /// # Errors
     ///
     /// This function returns an error if allocation fails.
     #[inline]
     pub fn new_bulk(mp: &PktMempool, n: u32) -> Result<Vec<Self>> {
-        let mut mbufs = (0..n)
-            .map(|_| MaybeUninit::<rte_mbuf>::uninit())
-            .collect::<Vec<_>>();
-        let mut ptrs = mbufs
-            .iter_mut()
-            .map(std::mem::MaybeUninit::as_mut_ptr)
-            .collect::<Vec<_>>();
+        let mut ptrs = (0..n).map(|_| ptr::null_mut()).collect::<Vec<_>>();
         // SAFETY: ffi
         let errno = unsafe { rte_pktmbuf_alloc_bulk(mp.as_ptr(), ptrs.as_mut_ptr(), n) };
         Error::from_ret(errno)?;
         let mut v = vec![];
-        for mut mbuf in mbufs {
-            let ptr = mbuf.as_mut_ptr();
-            // SAFETY: mbufs initialized in `rte_pktmbuf_alloc_bulk`
-            let _mbuf = unsafe { mbuf.assume_init() };
+        for ptr in ptrs {
             v.push(Self::new_with_ptr(ptr)?);
         }
         Ok(v)
@@ -162,8 +161,8 @@ impl Mbuf {
         unsafe { (*self.as_ptr()).nb_segs == 1 }
     }
 
-    /// Return immutable reference of the valid content, which starts at `buf_addr + data_off` with the
-    /// length of `data_len`, embedded in the given `Mbuf`.
+    /// Return an immutable reference of the valid content, which starts at `buf_addr + data_off`
+    /// with the length of `data_len`, embedded in the given `Mbuf`.
     #[inline]
     #[must_use]
     pub fn data_slice(&self) -> &[u8] {
@@ -175,7 +174,7 @@ impl Mbuf {
         }
     }
 
-    /// Return mutable reference of the valid content embedded in the given `Mbuf`.
+    /// Return a mutable reference of the valid content embedded in the given `Mbuf`.
     #[inline]
     pub fn data_slice_mut(&mut self) -> &mut [u8] {
         let m = self.as_ptr();
@@ -274,24 +273,35 @@ impl Mbuf {
     ///
     /// The chain segment limit exceeded.
     #[inline]
-    #[allow(clippy::needless_pass_by_value)] // the ownership of the last one should be taken
-    pub fn chain(&mut self, tail: Mbuf) -> std::result::Result<(), (Error, Mbuf)> {
+    pub fn chain_mbuf(&mut self, tail: Mbuf) -> StdResult<(), (Error, Mbuf)> {
         // SAFETY: ffi
         let errno = unsafe { rte_pktmbuf_chain(self.as_ptr(), tail.as_ptr()) };
         if let Err(err) = Error::from_ret(errno) {
             return Err((err, tail));
         }
+        #[allow(clippy::mem_forget)]
+        mem::forget(tail);
         Ok(())
     }
 
-    /// Get the next `Mbuf` chained.
-    #[must_use]
+    /// Get an immutable iterator of `Mbuf`.
     #[inline]
-    pub fn next(&self) -> Option<Mbuf> {
-        // SAFETY: self is valid since it's tested when initialized.
-        let ptr = unsafe { (*self.as_ptr()).next };
-        let m = Mbuf::new_with_ptr(ptr).ok()?;
-        Some(m)
+    #[must_use]
+    pub fn iter(&self) -> MbufIter<'_> {
+        MbufIter {
+            cur: self.as_ptr(),
+            _marker: PhantomData,
+        }
+    }
+
+    /// Get a mutable iterator of `Mbuf`.
+    #[inline]
+    #[must_use]
+    pub fn iter_mut(&mut self) -> MbufIterMut<'_> {
+        MbufIterMut {
+            cur: self.as_ptr(),
+            _marker: PhantomData,
+        }
     }
 
     /// Get pointer to `rte_mbuf`.
@@ -315,6 +325,119 @@ impl Drop for Mbuf {
     }
 }
 
+/// `Mbuf` immutable iterator.
+#[allow(missing_copy_implementations, clippy::module_name_repetitions)]
+#[derive(Debug)]
+pub struct MbufIter<'a> {
+    /// Current `rte_mbuf` pointer.
+    cur: *mut rte_mbuf,
+    /// Lifetime marker.
+    _marker: PhantomData<&'a Mbuf>,
+}
+
+impl<'a> Iterator for MbufIter<'a> {
+    type Item = MbufRef<'a>;
+
+    #[inline]
+    #[allow(unsafe_code)]
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = MbufRef::new(self.cur)?;
+        // SAFETY: self is valid since it's tested when initialized.
+        self.cur = unsafe { (*self.cur).next };
+        Some(item)
+    }
+}
+
+/// `Mbuf` mutable iterator.
+#[allow(missing_copy_implementations, clippy::module_name_repetitions)]
+#[derive(Debug)]
+pub struct MbufIterMut<'a> {
+    /// Current `rte_mbuf` pointer.
+    cur: *mut rte_mbuf,
+    /// Lifetime marker.
+    _marker: PhantomData<&'a Mbuf>,
+}
+
+impl<'a> Iterator for MbufIterMut<'a> {
+    type Item = MbufRefMut<'a>;
+
+    #[inline]
+    #[allow(unsafe_code)]
+    fn next(&mut self) -> Option<Self::Item> {
+        let item = MbufRefMut::new(self.cur)?;
+        // SAFETY: self is valid since it's tested when initialized.
+        self.cur = unsafe { (*self.cur).next };
+        Some(item)
+    }
+}
+
+/// `Mbuf` immutable reference.
+#[allow(clippy::module_name_repetitions)]
+#[derive(Debug)]
+pub struct MbufRef<'a> {
+    /// An `Mbuf` reference.
+    mb: ManuallyDrop<Mbuf>,
+    /// Lifetime marker.
+    _marker: PhantomData<&'a Mbuf>,
+}
+
+impl MbufRef<'_> {
+    /// Get a new instance of `MbufRef`.
+    fn new(ptr: *mut rte_mbuf) -> Option<Self> {
+        let mb = Mbuf::new_with_ptr(ptr).ok()?;
+        Some(Self {
+            mb: ManuallyDrop::new(mb),
+            _marker: PhantomData,
+        })
+    }
+}
+
+impl Deref for MbufRef<'_> {
+    type Target = Mbuf;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.mb
+    }
+}
+
+/// `Mbuf` mutable reference.
+#[allow(clippy::module_name_repetitions)]
+#[derive(Debug)]
+pub struct MbufRefMut<'a> {
+    /// An `Mbuf` reference.
+    mb: ManuallyDrop<Mbuf>,
+    /// Lifetime marker.
+    _marker: PhantomData<&'a Mbuf>,
+}
+
+impl MbufRefMut<'_> {
+    /// Get a new instance of `MbufRef`.
+    fn new(ptr: *mut rte_mbuf) -> Option<Self> {
+        let mb = Mbuf::new_with_ptr(ptr).ok()?;
+        Some(Self {
+            // to avoid double free
+            mb: ManuallyDrop::new(mb),
+            _marker: PhantomData,
+        })
+    }
+}
+
+impl Deref for MbufRefMut<'_> {
+    type Target = Mbuf;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        &self.mb
+    }
+}
+impl DerefMut for MbufRefMut<'_> {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.mb
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::eal::{self, IovaMode};
@@ -327,12 +450,13 @@ mod tests {
 
         // Create a packet mempool.
         let mp = PktMempool::create("test", 10).unwrap();
+
         let mut mbuf = Mbuf::new(&mp).unwrap();
         assert!(mbuf.is_contiguous());
         assert_eq!(mbuf.data_len(), 0);
         assert_eq!(mbuf.num_segs(), 1);
-        assert_eq!(mbuf.headroom(), 0);
-        assert_eq!(mbuf.tailroom(), 2176);
+        assert_eq!(mbuf.headroom(), 128);
+        assert_eq!(mbuf.tailroom(), 2048);
 
         // Read and write from mbuf.
         let data = mbuf.append(10).unwrap();
@@ -357,15 +481,22 @@ mod tests {
         assert_eq!(mbuf.data_slice(), &[0, 1, 2, 3, 4]);
 
         // Mbuf chaining.
-        let mbufs = Mbuf::new_bulk(&mp, 2).unwrap();
-        for mut m in mbufs.into_iter() {
-            let _ = m.append(5).unwrap();
-            mbuf.chain(m).unwrap();
-        }
+        let mut mbufs = Mbuf::new_bulk(&mp, 2).unwrap();
+        let mut mbuf2 = mbufs.pop().unwrap();
+        let mut mbuf1 = mbufs.pop().unwrap();
+        let _ = mbuf1.append(5).unwrap();
+        let _ = mbuf2.append(5).unwrap();
+        mbuf1.chain_mbuf(mbuf2).unwrap();
+        mbuf.chain_mbuf(mbuf1).unwrap();
         assert_eq!(mbuf.num_segs(), 3);
         assert_eq!(mbuf.pkt_len(), 15);
 
-        // Indirect mbuf.
+        // Mbuf iteration
+        for m in mbuf.iter() {
+            assert_eq!(m.data_len(), 5);
+        }
+
+        // Clone mbuf.
         let mbuf2 = mbuf.clone(&mp).unwrap();
         assert_eq!(mbuf2.data_slice(), &[0, 1, 2, 3, 4]);
         assert_eq!(mbuf2.num_segs(), 3);

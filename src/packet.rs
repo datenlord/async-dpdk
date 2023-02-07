@@ -49,7 +49,7 @@ impl Packet {
     }
 
     /// Takes the ownership of a `Mbuf` and convert it to a `Packet` instance.
-    #[allow(dead_code)]
+    #[allow(dead_code, clippy::needless_pass_by_value)]
     #[inline]
     pub(crate) fn from_mbuf(m: Mbuf) -> Self {
         // XXX protocol information in rte_mbuf may be incorrect
@@ -60,18 +60,13 @@ impl Packet {
             let pkt_type = unsafe { m.packet_type_union.packet_type };
             ((pkt_type & L3_MASK).into(), (pkt_type & L4_MASK).into())
         };
+
         let mut frags = vec![];
-        let mut cur = m;
-
-        let data = cur.data_slice();
-        frags.push(data.into()); // TODO zero-copy
-
-        while let Some(c) = cur.next() {
-            #[allow(clippy::shadow_unrelated)] // related actually
-            let data = c.data_slice();
-            frags.push(data.into()); // TODO zero-copy
-            cur = c;
+        for cur in m.iter() {
+            let data = cur.data_slice();
+            frags.push(data.into());
         }
+
         Packet {
             l3protocol,
             l4protocol,
@@ -90,7 +85,7 @@ impl Packet {
             while len > tail.tailroom() {
                 if tail.tailroom() == 0 {
                     if let Some(m) = head.as_mut() {
-                        if let Err((err, _)) = m.chain(tail) {
+                        if let Err((err, _)) = m.chain_mbuf(tail) {
                             return Err(err);
                         }
                     } else {
@@ -138,6 +133,7 @@ impl Packet {
 mod tests {
     use super::Packet;
     use crate::{
+        eal::{self, IovaMode},
         mbuf::Mbuf,
         mempool::{Mempool, PktMempool},
         proto::{L3Protocol, L4Protocol},
@@ -146,6 +142,7 @@ mod tests {
 
     #[test]
     fn test() {
+        let _ = eal::Config::new().iova_mode(IovaMode::VA).enter();
         let mut pkt = Packet::new(L3Protocol::Ipv4, L4Protocol::Tcp);
         pkt.append(BytesMut::new());
         assert_eq!(pkt.frags.len(), 1);
@@ -173,9 +170,9 @@ mod tests {
         }
         let tail2 = mbs.pop().unwrap();
         let mut tail1 = mbs.pop().unwrap();
-        tail1.chain(tail2).unwrap();
+        tail1.chain_mbuf(tail2).unwrap();
         let mut mb3 = mbs.pop().unwrap();
-        mb3.chain(tail1).unwrap();
+        mb3.chain_mbuf(tail1).unwrap();
 
         let pkt = Packet::from_mbuf(mb3);
         assert_eq!(pkt.frags.len(), 3);
@@ -184,12 +181,10 @@ mod tests {
         assert_eq!(&pkt.frags[2][..], &[2, 2, 2, 2, 2]);
 
         let mb4 = pkt.into_mbuf(&mp).unwrap();
-        assert_eq!(mb4.num_segs(), 3);
-        assert_eq!(mb4.data_slice(), &[0, 0, 0, 0, 0]);
-        assert_eq!(mb4.next().unwrap().data_slice(), &[1, 1, 1, 1, 1]);
+        assert_eq!(mb4.num_segs(), 1);
         assert_eq!(
-            mb4.next().unwrap().next().unwrap().data_slice(),
-            &[2, 2, 2, 2, 2]
+            mb4.data_slice(),
+            &[0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2]
         );
     }
 }

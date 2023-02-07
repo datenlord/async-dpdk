@@ -111,11 +111,11 @@ pub use dpdk_sys::{eth_foreach_dev, lcore_foreach, lcore_foreach_worker};
 
 pub mod alloc;
 pub mod eal;
+mod errno;
 pub mod lcore;
 pub mod mbuf;
 pub mod mempool;
 pub mod packet;
 mod proto;
 
-mod errno;
 pub use errno::*;
