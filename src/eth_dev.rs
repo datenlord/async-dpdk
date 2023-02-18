@@ -1,4 +1,10 @@
-//! `EthDev` wrapping
+//! An Ethernet device is corresponding to an UIO/VFIO device. DPDK provides APIs to configure
+//! and poll those devices in user space. This module provide safe wrappings for devices and
+//! queues. For more information, please refer to [`PMD document`].
+//!
+//! [`PMD document`]: https://doc.dpdk.org/guides/prog_guide/poll_mode_drv.html#poll-mode-driver
+
+#![allow(dead_code)] // to be fixed in the next PR
 
 use crate::{
     agent::{RxAgent, TxAgent},
@@ -19,8 +25,26 @@ use std::{fmt::Debug, mem::MaybeUninit, ptr, sync::Arc};
 use tokio::sync::mpsc;
 
 /// An Ethernet device.
+///
+/// It is identified with a `port_id`. Each `EthDev` has several tx queues and rx queues,
+/// which are polled by agent threads.
+///
+/// # Life circle of `EthDev`s.
+///
+/// ```text
+///     new         Configure the device then initialize tx/rx queues.
+///      |
+///      v
+///    start <--    Start agent threads and register queues on them.
+///      |     |
+///      v     |
+///    stop-----    Stop sgent threads and unregister queues.
+///      |          Stopped devices can be started again.
+///      v
+///    drop         Close the device.
+/// ```
 #[allow(missing_copy_implementations)]
-pub struct EthDev {
+pub(crate) struct EthDev {
     /// `port_id` identifying this `EthDev`.
     port_id: u16,
     /// `socket_id` that this `EthDev` is on.
@@ -42,7 +66,7 @@ impl EthDev {
     /// Get the number of ports which are usable for the application.
     #[inline]
     #[must_use]
-    pub fn available_ports() -> u32 {
+    pub(crate) fn available_ports() -> u32 {
         // SAFETY: ffi
         unsafe { u32::from(rte_eth_dev_count_avail()) }
     }
@@ -56,10 +80,14 @@ impl EthDev {
     /// # Errors
     ///
     /// Possible reasons:
-    ///
+    ///  - `Error::NotSupported`: this device does not support getting info.
+    ///  - `Error::NoDev`: invalid `port_id`.
+    ///  - `Error::InvalidArg`: invalid `n_rxq` or `n_txq`.
+    ///  - Failed to configure devices.
+    ///  - Failed to setup `RxQueue` and `TxQueue`.
     #[inline]
     #[allow(clippy::similar_names)] // tx and rx are DPDK terms
-    pub fn new(port_id: u16, n_rxq: u16, n_txq: u16) -> Result<Self> {
+    pub(crate) fn new(port_id: u16, n_rxq: u16, n_txq: u16) -> Result<Self> {
         let mut dev_info = MaybeUninit::<rte_eth_dev_info>::uninit();
         // SAFETY: ffi
         let errno = unsafe { rte_eth_dev_info_get(port_id, dev_info.as_mut_ptr()) };
@@ -133,33 +161,30 @@ impl EthDev {
     /// Get socket id.
     #[inline]
     #[must_use]
-    pub fn socket_id(&self) -> i32 {
+    pub(crate) fn socket_id(&self) -> i32 {
         self.socket_id
     }
 
     /// Get port id.
     #[inline]
     #[must_use]
-    pub fn port_id(&self) -> u16 {
+    pub(crate) fn port_id(&self) -> u16 {
         self.port_id
     }
 
     /// Start an Ethernet device.
     ///
-    /// The device start step is the last one and consists of setting the configured offload
-    /// features and in starting the transmit and the receive units of the device. Device
-    /// `RTE_ETH_DEV_NOLIVE_MAC_ADDR` flag causes MAC address to be set before PMD port start
-    /// callback function is invoked.
-    ///
-    /// On success, all basic functions exported by the Ethernet API (link status, receive/
-    /// transmit, and so on) can be invoked.
+    /// Register all `TxQueue`s and `RxQueue`s on agent threads and start polling. On success, all
+    /// basic functions exported by the Ethernet API (link status, receive/transmit, and so on)
+    /// can be invoked.
     ///
     /// # Errors
     ///
     /// Possible reasons:
-    ///
+    ///  - `Error::TempUnavail`: temporary error, retry later.
+    ///  - Failed to register queues on `TxAgent` and `RxAgent`.
     #[inline]
-    pub fn start(&mut self) -> Result<()> {
+    pub(crate) fn start(&mut self) -> Result<()> {
         // XXX now we use one TxAgent and one RxAgent for each EthDev.
         // Make the mapping more flexible.
         let rx_agent = RxAgent::start(self.socket_id);
@@ -197,9 +222,10 @@ impl EthDev {
     /// # Errors
     ///
     /// Possible reasons:
-    ///
+    ///  - Agent threads are terminated.
+    ///  - `Error::Busy`: unable to stop the device.
     #[inline]
-    pub fn stop(&mut self) -> Result<()> {
+    pub(crate) fn stop(&mut self) -> Result<()> {
         let rx_agent = self.rx_agent.take().ok_or(Error::BrokenPipe)?;
         let tx_agent = self.tx_agent.take().ok_or(Error::BrokenPipe)?;
 
@@ -222,12 +248,8 @@ impl EthDev {
     }
 
     /// Get MAC address.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if failed to get MAC address.
     #[inline]
-    pub fn mac_addr(&self) -> Result<rte_ether_addr> {
+    pub(crate) fn mac_addr(&self) -> Result<rte_ether_addr> {
         let mut ether_addr = MaybeUninit::<rte_ether_addr>::uninit();
         // SAFETY: ffi
         let errno = unsafe { rte_eth_macaddr_get(self.port_id, ether_addr.as_mut_ptr()) };
@@ -237,12 +259,8 @@ impl EthDev {
     }
 
     /// Enable receipt in promiscuous mode for an Ethernet device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if failed to enable promiscuous mode.
     #[inline]
-    pub fn enable_promiscuous(&self) -> Result<()> {
+    pub(crate) fn enable_promiscuous(&self) -> Result<()> {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_promiscuous_enable(self.port_id) };
         Error::from_ret(errno)?;
@@ -250,12 +268,8 @@ impl EthDev {
     }
 
     /// Disable receipt in promiscuous mode for an Ethernet device.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if failed to disable promiscuous mode.
     #[inline]
-    pub fn disable_promiscuous(&self) -> Result<()> {
+    pub(crate) fn disable_promiscuous(&self) -> Result<()> {
         // SAFETY: ffi
         let errno = unsafe { rte_eth_promiscuous_disable(self.port_id) };
         Error::from_ret(errno)?;
@@ -265,7 +279,7 @@ impl EthDev {
     /// Return the value of promiscuous mode for an Ethernet device.
     #[inline]
     #[must_use]
-    pub fn is_promiscuous(&self) -> bool {
+    pub(crate) fn is_promiscuous(&self) -> bool {
         // SAFETY: ffi
         unsafe { rte_eth_promiscuous_get(self.port_id) == 1 }
     }
@@ -306,7 +320,6 @@ impl Debug for EthDev {
 #[derive(Debug)]
 struct EthRxQueue {
     /// The `queue_id` refered to this `EthTxQueue`.
-    #[allow(dead_code)]
     queue_id: u16,
     /// `Mempool` to allocate `Mbuf`s to hold the received frames.
     _mp: PktMempool,
@@ -317,16 +330,16 @@ struct EthRxQueue {
 #[derive(Debug)]
 struct EthTxQueue {
     /// The `queue_id` refered to this `EthTxQueue`.
-    #[allow(dead_code)]
     queue_id: u16,
     /// `Mempool` to allocate `Mbuf`s to send.
-    #[allow(dead_code)]
     mp: PktMempool,
 }
 
 #[allow(unsafe_code)]
 impl EthRxQueue {
-    /// init
+    /// Init rx queue.
+    ///
+    /// Create a `Mempool` to hold received packets, then setup the queue.
     fn init(
         port_id: u16,
         queue_id: u16,
@@ -361,7 +374,9 @@ impl EthRxQueue {
 
 #[allow(unsafe_code)]
 impl EthTxQueue {
-    /// init
+    /// Init tx queue.
+    ///
+    /// Create a `Mempool` to hold packets to be sent, then setup the queue.
     fn init(
         port_id: u16,
         queue_id: u16,

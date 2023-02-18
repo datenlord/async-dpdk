@@ -111,7 +111,6 @@ pub use dpdk_sys::{eth_foreach_dev, lcore_foreach, lcore_foreach_worker};
 
 pub mod alloc;
 pub mod eal;
-pub mod eth_dev;
 pub mod lcore;
 pub mod mbuf;
 pub mod mempool;
@@ -120,6 +119,7 @@ pub mod udp;
 
 mod agent;
 mod errno;
+mod eth_dev;
 mod proto;
 mod socket;
 #[cfg(test)]
