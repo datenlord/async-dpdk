@@ -400,3 +400,21 @@ impl EthTxQueue {
         Ok(Arc::new(Self { queue_id, mp }))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::EthDev;
+    use crate::eal;
+
+    #[tokio::test]
+    async fn test() {
+        env_logger::init();
+        let _ = eal::Config::new().enter();
+        let mut dev = EthDev::new(0, 1, 1).unwrap();
+        dev.start().unwrap();
+        dev.stop().unwrap();
+        dev.start().unwrap();
+        dev.stop().unwrap();
+        // `dev` drop here
+    }
+}
