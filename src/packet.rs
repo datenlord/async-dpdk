@@ -49,8 +49,8 @@ impl Packet {
     }
 
     /// Takes the ownership of a `Mbuf` and convert it to a `Packet` instance.
-    #[allow(dead_code, clippy::needless_pass_by_value)]
     #[inline]
+    #[allow(clippy::needless_pass_by_value)]
     pub(crate) fn from_mbuf(m: Mbuf) -> Self {
         // XXX protocol information in rte_mbuf may be incorrect
         let (l3protocol, l4protocol): (L3Protocol, L4Protocol) = {
@@ -75,7 +75,6 @@ impl Packet {
     }
 
     /// Convert a `Packet` to a `Mbuf`.
-    #[allow(dead_code)]
     #[inline]
     pub(crate) fn into_mbuf(mut self, mp: &PktMempool) -> Result<Mbuf> {
         let mut tail = Mbuf::new(mp)?;

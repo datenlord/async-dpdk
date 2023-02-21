@@ -1,7 +1,5 @@
 //! RX/TX agent thread, which polls queues in background.
 
-#![allow(dead_code)] // to be fixed in the next PR
-
 use crate::mbuf::Mbuf;
 use crate::proto::{L3Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP};
 use crate::socket::{self, RecvResult};

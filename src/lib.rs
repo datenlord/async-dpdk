@@ -114,6 +114,7 @@ pub mod eal;
 pub mod lcore;
 pub mod mbuf;
 pub mod mempool;
+pub mod net_dev;
 pub mod packet;
 pub mod udp;
 
