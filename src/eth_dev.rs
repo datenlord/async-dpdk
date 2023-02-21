@@ -4,19 +4,17 @@
 //!
 //! [`PMD document`]: https://doc.dpdk.org/guides/prog_guide/poll_mode_drv.html#poll-mode-driver
 
-#![allow(dead_code)] // to be fixed in the next PR
-
 use crate::{
     agent::{RxAgent, TxAgent},
     mbuf::Mbuf,
     mempool::{Mempool, PktMempool},
+    packet::Packet,
     Error, Result,
 };
 use dpdk_sys::{
     rte_eth_conf, rte_eth_dev_adjust_nb_rx_tx_desc, rte_eth_dev_close, rte_eth_dev_configure,
     rte_eth_dev_count_avail, rte_eth_dev_info, rte_eth_dev_info_get, rte_eth_dev_set_ptypes,
     rte_eth_dev_socket_id, rte_eth_dev_start, rte_eth_dev_stop, rte_eth_macaddr_get,
-    rte_eth_promiscuous_disable, rte_eth_promiscuous_enable, rte_eth_promiscuous_get,
     rte_eth_rx_queue_setup, rte_eth_tx_queue_setup, rte_ether_addr,
     RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
 };
@@ -155,13 +153,6 @@ impl EthDev {
         })
     }
 
-    /// Get socket id.
-    #[inline]
-    #[must_use]
-    pub(crate) fn socket_id(&self) -> i32 {
-        self.socket_id
-    }
-
     /// Get port id.
     #[inline]
     #[must_use]
@@ -245,6 +236,13 @@ impl EthDev {
         Ok(())
     }
 
+    /// Get a `TxSender`.
+    pub(crate) fn sender(&self, queue_id: u16) -> Option<TxSender> {
+        let chan: mpsc::Sender<Mbuf> = self.tx_chan.get(queue_id as usize)?.clone()?;
+        let tx_queue: Arc<EthTxQueue> = Arc::clone(self.tx_queue.get(queue_id as usize)?);
+        Some(TxSender { chan, tx_queue })
+    }
+
     /// Get MAC address.
     #[inline]
     pub(crate) fn mac_addr(&self) -> Result<rte_ether_addr> {
@@ -254,32 +252,6 @@ impl EthDev {
         Error::from_ret(errno)?;
         // SAFETY: `rte_ether_addr` is successfully initialized due to no error code.
         Ok(unsafe { ether_addr.assume_init() })
-    }
-
-    /// Enable receipt in promiscuous mode for an Ethernet device.
-    #[inline]
-    pub(crate) fn enable_promiscuous(&self) -> Result<()> {
-        // SAFETY: ffi
-        let errno = unsafe { rte_eth_promiscuous_enable(self.port_id) };
-        Error::from_ret(errno)?;
-        Ok(())
-    }
-
-    /// Disable receipt in promiscuous mode for an Ethernet device.
-    #[inline]
-    pub(crate) fn disable_promiscuous(&self) -> Result<()> {
-        // SAFETY: ffi
-        let errno = unsafe { rte_eth_promiscuous_disable(self.port_id) };
-        Error::from_ret(errno)?;
-        Ok(())
-    }
-
-    /// Return the value of promiscuous mode for an Ethernet device.
-    #[inline]
-    #[must_use]
-    pub(crate) fn is_promiscuous(&self) -> bool {
-        // SAFETY: ffi
-        unsafe { rte_eth_promiscuous_get(self.port_id) == 1 }
     }
 }
 
@@ -313,11 +285,29 @@ impl Debug for EthDev {
     }
 }
 
+/// A wrapper for channel to send Mbuf from socket to `EthTxQueue`.
+#[derive(Debug)]
+pub(crate) struct TxSender {
+    /// The sender held by socket.
+    chan: mpsc::Sender<Mbuf>,
+    /// The `EthTxQueue` that this request is sent to.
+    tx_queue: Arc<EthTxQueue>,
+}
+
+impl TxSender {
+    /// Send a request to `TxAgent`
+    pub(crate) async fn send(&self, pkt: Packet) -> Result<()> {
+        let m = pkt.into_mbuf(&self.tx_queue.mp)?;
+        self.chan.send(m).await.map_err(Error::from)
+    }
+}
+
 /// An Ethernet device rx queue.
 #[allow(missing_copy_implementations)]
 #[derive(Debug)]
 struct EthRxQueue {
     /// The `queue_id` refered to this `EthTxQueue`.
+    #[allow(dead_code)]
     queue_id: u16,
     /// `Mempool` to allocate `Mbuf`s to hold the received frames.
     _mp: PktMempool,
@@ -328,6 +318,7 @@ struct EthRxQueue {
 #[derive(Debug)]
 struct EthTxQueue {
     /// The `queue_id` refered to this `EthTxQueue`.
+    #[allow(dead_code)]
     queue_id: u16,
     /// `Mempool` to allocate `Mbuf`s to send.
     mp: PktMempool,
@@ -347,23 +338,13 @@ impl EthRxQueue {
         dev_info: &rte_eth_dev_info,
         eth_conf: &rte_eth_conf,
     ) -> Result<Arc<Self>> {
-        if socket_id < 0 {
-            return Err(Error::InvalidArg);
-        }
+        let socket_id: u32 = socket_id.try_into().map_err(Error::from)?;
         let mp = PktMempool::create(format!("rx_{port_id}_{queue_id}").as_str(), n_elem)?;
         let mut rx_conf = dev_info.default_rxconf;
         rx_conf.offloads = eth_conf.rxmode.offloads;
         // SAFETY: `mp` checked in initialization
         let errno = unsafe {
-            #[allow(clippy::cast_sign_loss)] // sign checked
-            rte_eth_rx_queue_setup(
-                port_id,
-                queue_id,
-                n_rxd,
-                socket_id as _,
-                &rx_conf,
-                mp.as_ptr(),
-            )
+            rte_eth_rx_queue_setup(port_id, queue_id, n_rxd, socket_id, &rx_conf, mp.as_ptr())
         };
         Error::from_ret(errno)?;
         Ok(Arc::new(Self { queue_id, _mp: mp }))
@@ -383,17 +364,13 @@ impl EthTxQueue {
         dev_info: &rte_eth_dev_info,
         eth_conf: &rte_eth_conf,
     ) -> Result<Arc<Self>> {
-        if socket_id < 0 {
-            return Err(Error::InvalidArg);
-        }
+        let socket_id: u32 = socket_id.try_into().map_err(Error::from)?;
         let mp = PktMempool::create(format!("tx_{port_id}_{queue_id}").as_str(), 1024)?;
         let mut tx_conf = dev_info.default_txconf;
         tx_conf.offloads = eth_conf.txmode.offloads;
         // SAFETY: ffi
-        let errno = unsafe {
-            #[allow(clippy::cast_sign_loss)] // sign checked
-            rte_eth_tx_queue_setup(port_id, queue_id, n_txd, socket_id as _, &tx_conf)
-        };
+        let errno =
+            unsafe { rte_eth_tx_queue_setup(port_id, queue_id, n_txd, socket_id, &tx_conf) };
         Error::from_ret(errno)?;
         Ok(Arc::new(Self { queue_id, mp }))
     }

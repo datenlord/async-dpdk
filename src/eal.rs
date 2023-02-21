@@ -24,7 +24,7 @@
 //!     .unwrap();
 //! ```
 
-use crate::{Error, Result};
+use crate::{net_dev, Error, Result};
 use dpdk_sys::{
     rte_eal_cleanup, rte_eal_get_runtime_dir, rte_eal_has_hugepages, rte_eal_has_pci, rte_eal_init,
 };
@@ -58,6 +58,19 @@ pub struct Eal {}
 #[allow(unsafe_code)]
 unsafe impl Sync for Eal {}
 
+impl Drop for Eal {
+    #[inline]
+    fn drop(&mut self) {
+        // Close all devices
+        #[allow(clippy::unwrap_used)] // used in drop
+        net_dev::device_close().unwrap();
+        // SAFETY: ffi
+        #[allow(unsafe_code)]
+        let errno = unsafe { rte_eal_cleanup() };
+        Error::parse_err(errno);
+    }
+}
+
 /// Whether EAL is using hugepages.
 #[allow(unsafe_code)]
 #[inline]
@@ -89,16 +102,6 @@ pub fn runtime_dir() -> Result<PathBuf> {
     // SAFETY: read C string
     let cs = unsafe { CString::from_raw(ptr as _) };
     Ok(PathBuf::from(cs.into_string().map_err(Error::from)?))
-}
-
-impl Drop for Eal {
-    #[inline]
-    fn drop(&mut self) {
-        // SAFETY: ffi
-        #[allow(unsafe_code)]
-        let errno = unsafe { rte_eal_cleanup() };
-        Error::parse_err(errno);
-    }
 }
 
 /// Used for the configuration of EAL.
@@ -378,6 +381,7 @@ impl Config {
         }
         let context = Arc::new(Eal {});
         *CONTEXT.write().map_err(Error::from)? = Some(context);
+        net_dev::device_probe(self.addrs)?;
         Ok(())
     }
 }
