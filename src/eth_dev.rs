@@ -237,6 +237,13 @@ impl EthDev {
     }
 
     /// Get a `TxSender`.
+    ///
+    /// # Errors
+    ///
+    /// Possible reasons for an error:
+    ///
+    /// - Invalid `queue_id`.
+    /// - Queue not registered.
     pub(crate) fn sender(&self, queue_id: u16) -> Option<TxSender> {
         let chan: mpsc::Sender<Mbuf> = self.tx_chan.get(queue_id as usize)?.clone()?;
         let tx_queue: Arc<EthTxQueue> = Arc::clone(self.tx_queue.get(queue_id as usize)?);
