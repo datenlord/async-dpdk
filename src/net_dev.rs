@@ -31,22 +31,26 @@ struct InetDevice {
 pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
     let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
     if !inet_device.is_empty() {
+        error!("Device already probed");
         return Err(Error::Already);
     }
     let ndev = EthDev::available_ports();
-    if (ndev as usize) < addrs.len() {
+    if (ndev as usize) < addrs.len() || (u16::MAX as usize) < addrs.len() {
+        error!("Address list too long");
         return Err(Error::InvalidArg);
     }
-    let ndev = addrs.len().min(ndev as usize);
-    for (i, addr) in addrs.into_iter().enumerate().take(ndev) {
-        #[allow(clippy::cast_possible_truncation)]
+    for (i, addr) in addrs.into_iter().enumerate() {
+        #[allow(clippy::cast_possible_truncation)] // checked
         let port_id = i as u16;
         // SAFETY: ffi
         let dev_info = unsafe {
             let name = CString::new("rte_eth_dev_info").map_err(Error::from)?;
             let dev_info = rte_malloc(name.as_ptr(), mem::size_of::<rte_eth_dev_info>(), 0);
             let errno = rte_eth_dev_info_get(port_id, dev_info.cast());
-            Error::from_ret(errno)?;
+            Error::from_ret(errno).map_err(|e| {
+                rte_free(dev_info.cast());
+                e
+            })?;
             &mut *(dev_info.cast::<rte_eth_dev_info>())
         };
         let n_rxq = dev_info.max_rx_queues;
@@ -71,7 +75,7 @@ pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
 ///
 /// # Errors
 ///
-/// - Main thread crushed.
+/// - Lock poisoned.
 /// - Unable to start device.
 #[inline]
 pub fn device_start() -> Result<()> {
@@ -91,7 +95,7 @@ pub fn device_start() -> Result<()> {
 ///
 /// Possible reasons:
 ///
-/// - Main thread crushed.
+/// - Lock poisoned.
 /// - Unable to stop device.
 #[inline]
 pub fn device_stop() -> Result<()> {
@@ -113,6 +117,9 @@ pub(crate) fn device_close() -> Result<()> {
 }
 
 /// Get a device from an IP address.
+///
+/// The returned result will be a tuple of a `TxSender` sending messages to that device and its Ether
+/// address.
 pub(crate) fn find_dev_by_ip(ip: IpAddr) -> Result<(TxSender, rte_ether_addr)> {
     let inet_device = INET_DEVICE.read().map_err(Error::from)?;
     let inet_iter = inet_device.iter();
@@ -122,7 +129,7 @@ pub(crate) fn find_dev_by_ip(ip: IpAddr) -> Result<(TxSender, rte_ether_addr)> {
                 error!("Device is not running!");
                 return Err(Error::NoDev);
             }
-            let sender = dev.ethdev.sender(0).ok_or(Error::NoDev)?;
+            let sender = dev.ethdev.sender(0).ok_or(Error::NotStart)?;
             let addr = dev.ethdev.mac_addr()?;
             return Ok((sender, addr));
         }
@@ -131,10 +138,29 @@ pub(crate) fn find_dev_by_ip(ip: IpAddr) -> Result<(TxSender, rte_ether_addr)> {
                 debug!("Device is not running, try the next one");
                 continue;
             }
-            let sender = dev.ethdev.sender(0).ok_or(Error::NoDev)?;
+            let sender = dev.ethdev.sender(0).ok_or(Error::NotStart)?;
             let addr = dev.ethdev.mac_addr()?;
             return Ok((sender, addr));
         }
     }
+    error!("Ip address {ip} not matched to any address");
     Err(Error::InvalidArg)
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::eal;
+
+    use super::{device_close, device_probe, device_start, device_stop};
+
+    #[tokio::test]
+    async fn test() {
+        env_logger::init();
+        let _ = eal::Config::new().enter();
+        let ip = vec!["10.2.3.4".parse().unwrap()];
+        device_probe(ip).unwrap();
+        device_start().unwrap();
+        device_stop().unwrap();
+        device_close().unwrap();
+    }
 }
