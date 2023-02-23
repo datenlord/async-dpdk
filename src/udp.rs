@@ -13,7 +13,7 @@ use bytes::{Buf, BufMut, BytesMut};
 use dpdk_sys::{
     rte_ether_addr, rte_ether_hdr, rte_ipv4_cksum, rte_ipv4_hdr, rte_udp_hdr, RTE_ETHER_TYPE_IPV4,
 };
-use log::error;
+use log::{debug, error};
 use std::{
     fmt::Debug,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
@@ -91,7 +91,7 @@ impl UdpSocket {
     ///
     /// Possible reasons:
     ///
-    /// - Recv agent crushed.
+    /// - Recv agent not started.
     #[inline]
     #[allow(clippy::indexing_slicing)]
     pub async fn recv_from(&self, buf: &mut [u8]) -> Result<(usize, SocketAddr)> {
@@ -123,7 +123,7 @@ impl UdpSocket {
     /// - Data to long.
     /// - Send agent not started.
     #[inline]
-    #[allow(unsafe_code)]
+    #[allow(unsafe_code, clippy::cast_possible_truncation)]
     pub async fn send_to<A: ToSocketAddrs>(&self, buf: &[u8], addr: A) -> Result<usize> {
         #[allow(clippy::map_err_ignore)]
         let addr = addr
@@ -132,32 +132,31 @@ impl UdpSocket {
             .next()
             .ok_or(Error::InvalidArg)?;
 
-        let len = buf.len();
+        let buf_len = buf.len();
         let l2_sz = ETHER_HDR_LEN;
         let l3_sz = L3Protocol::Ipv4.length();
         let l4_sz = L4Protocol::Udp.length();
-
-        if buf.len().wrapping_add(l3_sz as _).wrapping_add(l4_sz as _) < u16::MAX as usize {
-            return Err(Error::InvalidArg);
-        }
+        let payload_len: u16 = buf.len().try_into().map_err(Error::from)?;
+        let total_len = payload_len
+            .checked_add(l3_sz)
+            .ok_or(Error::InvalidArg)?
+            .checked_add(l4_sz)
+            .ok_or(Error::InvalidArg)?;
 
         let mut hdr = BytesMut::with_capacity(l2_sz.wrapping_add(l3_sz).wrapping_add(l4_sz) as _);
         let mut pkt = Packet::new(L3Protocol::Ipv4, L4Protocol::Udp);
 
-        // fill header
+        // make this function `Send`.
         {
             // fill l2 header
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             #[allow(clippy::cast_ptr_alignment)]
-            let ether_hdr =
-                unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_ether_hdr>()) };
+            let ether_hdr = unsafe { &mut *(hdr.as_mut_ptr().cast::<rte_ether_hdr>()) };
             ether_hdr.src_addr = self.eth_addr;
             // TODO send to real mac addr. implement ARP in the future!
             ether_hdr.dst_addr.addr_bytes.copy_from_slice(&[0xff; 6]);
-            #[allow(clippy::cast_possible_truncation)] // 0x800 < u16::MAX
-            {
-                ether_hdr.ether_type = (RTE_ETHER_TYPE_IPV4 as u16).to_be();
-            }
+            ether_hdr.ether_type = (RTE_ETHER_TYPE_IPV4 as u16).to_be();
+
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             unsafe {
                 hdr.advance_mut(l2_sz as _);
@@ -165,21 +164,13 @@ impl UdpSocket {
 
             // fill l3 header
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
-            let ip_hdr = unsafe {
-                #[allow(clippy::cast_possible_truncation)] // buf length checked
-                &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_ipv4_hdr>())
-            };
+            let ip_hdr = unsafe { &mut *(hdr.as_mut_ptr().cast::<rte_ipv4_hdr>()) };
             ip_hdr.version_ihl_union.version_ihl = 0x45; // version = 4, ihl = 5
             ip_hdr.type_of_service = 0;
-            #[allow(clippy::cast_possible_truncation)] // buf length checked
-            {
-                ip_hdr.total_length = (buf.len() as u16)
-                    .wrapping_add(l4_sz)
-                    .wrapping_add(l3_sz)
-                    .to_be();
-            }
+            ip_hdr.total_length = total_len.to_be();
+
             ip_hdr.packet_id = IPID.fetch_add(1, Ordering::AcqRel).to_be();
-            ip_hdr.fragment_offset = 0u16.to_be();
+            ip_hdr.fragment_offset = 0u16;
             ip_hdr.time_to_live = 64;
             ip_hdr.next_proto_id = IP_NEXT_PROTO_UDP;
             ip_hdr.dst_addr = match addr.ip() {
@@ -190,20 +181,19 @@ impl UdpSocket {
             ip_hdr.src_addr = self.ip;
             // SAFETY: ffi
             ip_hdr.hdr_checksum = unsafe { rte_ipv4_cksum(ip_hdr).to_be() };
+
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             unsafe {
                 hdr.advance_mut(l3_sz as _);
             }
 
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
-            let udp_hdr = unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_udp_hdr>()) };
+            let udp_hdr = unsafe { &mut *(hdr.as_mut_ptr().cast::<rte_udp_hdr>()) };
             udp_hdr.src_port = self.port;
             udp_hdr.dst_port = addr.port();
-            #[allow(clippy::cast_possible_truncation)] // buf length checked
-            {
-                udp_hdr.dgram_len = (buf.len() as u16).wrapping_add(l4_sz).to_be();
-            }
+            udp_hdr.dgram_len = payload_len.wrapping_add(l4_sz).to_be();
             udp_hdr.dgram_cksum = 0;
+
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             unsafe {
                 hdr.advance_mut(l4_sz as _);
@@ -213,7 +203,7 @@ impl UdpSocket {
             pkt.append(BytesMut::from(buf));
         }
         self.tx.send(pkt).await?;
-        Ok(len)
+        Ok(buf_len)
     }
 }
 
@@ -254,6 +244,7 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) -> Option<(i32, RecvResult)> {
     let dst_ip = IpAddr::from(dst_ip_bytes);
     let src_ip_bytes: [u8; 4] = ip_hdr.src_addr.to_ne_bytes();
     let src_ip = IpAddr::from(src_ip_bytes);
+    debug!("from {src_ip:?} to {dst_ip:?}");
 
     if data.len()
         < L3Protocol::Ipv4
