@@ -41,6 +41,7 @@ mod net {
         async fn test() {
             let _ = eal::Config::new()
                 .device_probe(&["10.2.3.0", "10.2.3.1"])
+                .unwrap()
                 .enter();
             net_dev::device_start().unwrap();
             let server = task::spawn(server());
@@ -78,6 +79,7 @@ mod net {
         async fn test() {
             let _ = eal::Config::new()
                 .device_probe(&["10.2.3.0", "10.2.3.1"])
+                .unwrap()
                 .enter();
             net_dev::device_start().unwrap();
             let server = task::spawn(server());
@@ -113,6 +115,7 @@ mod net {
         async fn test() {
             let _ = eal::Config::new()
                 .device_probe(&["10.2.3.0", "10.2.3.1"])
+                .unwrap()
                 .enter();
             net_dev::device_start().unwrap();
             let server = task::spawn(server());

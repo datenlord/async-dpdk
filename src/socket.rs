@@ -218,7 +218,7 @@ pub(crate) fn addr_2_sockfd(dst_port: u16, dst_ip: IpAddr) -> Option<i32> {
     inner
         .info
         .get(&dst_port)
-        .and_then(|&PortInfo { ip, fd }| (ip.is_unspecified() || ip == dst_ip).then(|| fd))
+        .and_then(|&PortInfo { ip, fd }| (ip.is_unspecified() || ip == dst_ip).then_some(fd))
 }
 
 /// Called by socket, create mailbox on creation.
