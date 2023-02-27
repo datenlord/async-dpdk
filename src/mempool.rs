@@ -6,10 +6,10 @@
 
 use crate::{lcore, mbuf::Mbuf, Error, Result};
 use dpdk_sys::{
-    cstring, rte_mempool, rte_mempool_avail_count, rte_mempool_create, rte_mempool_free,
-    rte_mempool_get, rte_mempool_get_bulk, rte_mempool_in_use_count, rte_mempool_lookup,
-    rte_mempool_put, rte_mempool_put_bulk, rte_pktmbuf_alloc, rte_pktmbuf_free,
-    rte_pktmbuf_pool_create, RTE_MBUF_DEFAULT_BUF_SIZE,
+    rte_mempool, rte_mempool_avail_count, rte_mempool_create, rte_mempool_free, rte_mempool_get,
+    rte_mempool_get_bulk, rte_mempool_in_use_count, rte_mempool_lookup, rte_mempool_put,
+    rte_mempool_put_bulk, rte_pktmbuf_alloc, rte_pktmbuf_free, rte_pktmbuf_pool_create,
+    RTE_MBUF_DEFAULT_BUF_SIZE,
 };
 use lazy_static::lazy_static;
 use log::trace;
@@ -113,7 +113,7 @@ where
 {
     /// An `Arc` pointer to `MempoolInner`.
     inner: Arc<MpRef>,
-    /// Placeholder for generic data type.
+    /// Placeholder for generic type.
     _marker: PhantomData<T>,
 }
 
@@ -139,7 +139,8 @@ where
     #[inline]
     fn get(&self) -> Result<T> {
         let mut ptr = ptr::null_mut::<T>();
-        // SAFETY: ffi
+        // SAFETY: invalid allocation result in a negative errno, which is checked later.
+        // DPDK allocated objects are aligned to the cacheline size.
         #[allow(trivial_casts, unsafe_code)]
         let errno = unsafe {
             rte_mempool_get(
@@ -148,7 +149,7 @@ where
             )
         };
         Error::from_ret(errno)?;
-        // SAFETY: valid memory.
+        // SAFETY: valid memory, initialized here
         #[allow(unsafe_code)]
         unsafe {
             *ptr = T::default();
@@ -158,7 +159,7 @@ where
 
     #[inline]
     fn put(&self, object: T) {
-        // SAFETY: ffi
+        // SAFETY: *rte_mempool pointer checked
         #[allow(unsafe_code)]
         unsafe {
             rte_mempool_put(self.inner.as_ptr(), object.into_raw());
@@ -206,7 +207,7 @@ where
         let obj_size = T::obj_size().try_into().map_err(Error::from)?;
         let socket_id = lcore::socket_id();
 
-        // SAFETY: ffi
+        // SAFETY: pointer checked in `MpRef::new`
         #[allow(unsafe_code)]
         let ptr = unsafe {
             rte_mempool_create(
@@ -240,7 +241,7 @@ where
     #[inline]
     pub fn get_bulk(&self, n: u32) -> Result<Vec<Box<T>>> {
         let mut ptrs = (0..n).map(|_| ptr::null_mut::<T>()).collect::<Vec<_>>();
-        // SAFETY: ffi
+        // SAFETY: invalid allocation result in a negative errno
         #[allow(unsafe_code)]
         let errno =
             unsafe { rte_mempool_get_bulk(self.inner.as_ptr(), ptrs.as_mut_ptr().cast(), n) };
@@ -248,6 +249,7 @@ where
         let vec = ptrs
             .into_iter()
             .map(|ptr| {
+                // SAFETY: pointers' validity checked
                 #[allow(unsafe_code)]
                 unsafe {
                     *ptr = T::default();
@@ -282,11 +284,12 @@ impl Mempool<Mbuf> for PktMempool {
     #[inline]
     fn create(name: &str, size: u32) -> Result<Self> {
         let socket_id = lcore::socket_id();
-        // SAFETY: ffi
+        let name = CString::new(name).map_err(Error::from)?;
+        // SAFETY: pointer checked in `MpRef::new`
         #[allow(unsafe_code, clippy::cast_possible_truncation)]
         let ptr = unsafe {
             rte_pktmbuf_pool_create(
-                cstring!(name),
+                name.as_ptr(),
                 size,
                 0,
                 0,
@@ -307,7 +310,7 @@ impl Mempool<Mbuf> for PktMempool {
 
     #[inline]
     fn get(&self) -> Result<Mbuf> {
-        // SAFETY: ffi
+        // SAFETY: pointer checked in `Mbuf::new_with_ptr`
         #[allow(unsafe_code)]
         let ptr = unsafe { rte_pktmbuf_alloc(self.as_ptr()) };
         Mbuf::new_with_ptr(ptr)
@@ -397,7 +400,7 @@ impl MpRef {
     /// Lookup a `Mempool` with its name.
     #[inline]
     fn lookup(name: &CString) -> Result<Arc<Self>> {
-        // SAFETY: ffi
+        // SAFETY: pointer checked later
         #[allow(unsafe_code)]
         let ptr = unsafe { rte_mempool_lookup(name.as_ptr()) };
         if ptr.is_null() {

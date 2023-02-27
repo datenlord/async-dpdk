@@ -63,19 +63,21 @@ impl MempoolObj for Mbuf {
 
 #[allow(unsafe_code)]
 impl Mbuf {
-    /// Get an `Mbuf` instance with pointer to `rte_mbuf`.
+    /// Get an `Mbuf` instance with pointer to `rte_mbuf`. Pointer is checked to
+    /// be non-null here.
     pub(crate) fn new_with_ptr(ptr: *mut rte_mbuf) -> Result<Self> {
         NonNull::new(ptr).map_or(Err(Error::NoMem), |mb| Ok(Self { mb }))
     }
 
-    /// Allocate an uninitialized `Mbuf` from mempool.
+    /// Allocate a new `Mbuf` instance from the given `PktMempool`.
     ///
     /// # Errors
     ///
     /// This function returns an error if allocation fails.
     #[inline]
     pub fn new(mp: &PktMempool) -> Result<Self> {
-        // SAFETY: ffi
+        // SAFETY: check pointer in `Self::new_with_ptr`. Fields in `rte_mbuf` are set
+        // to default values. DPDK allocated objects are aligned to the cacheline size.
         let ptr = unsafe { rte_pktmbuf_alloc(mp.as_ptr()) };
         Self::new_with_ptr(ptr)
     }
@@ -88,7 +90,8 @@ impl Mbuf {
     #[inline]
     pub fn new_bulk(mp: &PktMempool, n: u32) -> Result<Vec<Self>> {
         let mut ptrs = (0..n).map(|_| ptr::null_mut()).collect::<Vec<_>>();
-        // SAFETY: ffi
+        // SAFETY: invalid allocation result in a negative errno, which is checked later.
+        // In this function, fields are set to default values.
         let errno = unsafe { rte_pktmbuf_alloc_bulk(mp.as_ptr(), ptrs.as_mut_ptr(), n) };
         Error::from_ret(errno)?;
         let mut v = vec![];
@@ -114,7 +117,7 @@ impl Mbuf {
         unsafe { (*self.as_ptr()).pkt_len as usize }
     }
 
-    /// Get the number of segments of a `Mbuf`.
+    /// Get the number of segments of an `Mbuf`.
     #[inline]
     #[must_use]
     pub fn num_segs(&self) -> u32 {
@@ -126,7 +129,7 @@ impl Mbuf {
     #[inline]
     #[must_use]
     pub fn headroom(&self) -> usize {
-        // SAFETY: ffi
+        // SAFETY: the *rte_mbuf pointer is checked at initialization and never changes
         unsafe { rte_pktmbuf_headroom(self.as_ptr()) as usize }
     }
 
@@ -134,7 +137,7 @@ impl Mbuf {
     #[inline]
     #[must_use]
     pub fn tailroom(&self) -> usize {
-        // SAFETY: ffi
+        // SAFETY: the *rte_mbuf pointer is checked at initialization and never changes
         unsafe { rte_pktmbuf_tailroom(self.as_ptr()) as usize }
     }
 
@@ -148,7 +151,7 @@ impl Mbuf {
     /// This function returns an error if the allocation failed.
     #[inline]
     pub fn clone(&self, mp: &PktMempool) -> Result<Self> {
-        // SAFETY: ffi
+        // SAFETY: pointer checked in `Self::new_with_ptr`
         let ptr = unsafe { rte_pktmbuf_clone(self.as_ptr(), mp.as_ptr()) };
         Self::new_with_ptr(ptr)
     }
@@ -167,7 +170,7 @@ impl Mbuf {
     #[must_use]
     pub fn data_slice(&self) -> &[u8] {
         let m = self.as_ptr();
-        // SAFETY: ffi; memory is initialized and valid
+        // SAFETY: memory is initialized and valid
         unsafe {
             let data = rte_mbuf_buf_addr(m, (*m).pool).add((*m).data_off as _);
             slice::from_raw_parts(data.cast::<u8>(), (*m).data_len as _)
@@ -178,7 +181,7 @@ impl Mbuf {
     #[inline]
     pub fn data_slice_mut(&mut self) -> &mut [u8] {
         let m = self.as_ptr();
-        // SAFETY: ffi; memory is initialized and valid
+        // SAFETY: memory is initialized and valid
         unsafe {
             let data = rte_mbuf_buf_addr(m, (*m).pool).add((*m).data_off as _);
             slice::from_raw_parts_mut(data.cast::<u8>(), (*m).data_len as _)
@@ -187,22 +190,22 @@ impl Mbuf {
 
     /// Prepend `len` bytes to an `Mbuf` data area.
     ///
-    /// Returns a mutable reference to the start address of the added data.
+    /// Returns a mutable reference to the appended area.
     ///
     /// # Errors
     ///
-    /// If there is not enough headroom in the first segment, the function fail,
+    /// If there is not enough headroom in the first segment, the function fails,
     /// without modifying the `Mbuf`.
     #[inline]
     pub fn prepend(&mut self, len: usize) -> Result<&mut [u8]> {
-        // SAFETY: ffi
+        // SAFETY: returned pointer checked later
         let data = unsafe {
             rte_pktmbuf_prepend(self.as_ptr(), len.try_into().map_err(Error::from)?).cast::<u8>()
         };
         if data.is_null() {
             return Err(Error::NoMem);
         }
-        // SAFETY: memory is valid since data is not null
+        // SAFETY: memory is valid
         unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
     }
 
@@ -216,14 +219,14 @@ impl Mbuf {
     /// without modifying the `Mbuf`.
     #[inline]
     pub fn append(&mut self, len: usize) -> Result<&mut [u8]> {
-        // SAFETY: ffi
+        // SAFETY: returned pointer checked later
         let data = unsafe {
             rte_pktmbuf_append(self.as_ptr(), len.try_into().map_err(Error::from)?).cast::<u8>()
         };
         if data.is_null() {
             return Err(Error::NoMem);
         }
-        // SAFETY: memory is initialzed
+        // SAFETY: memory is valid
         unsafe { Ok(slice::from_raw_parts_mut(data, len)) }
     }
 
@@ -236,7 +239,7 @@ impl Mbuf {
     /// will fail with the `Mbuf` unchanged.
     #[inline]
     pub fn adj(&mut self, len: usize) -> Result<()> {
-        // SAFETY: ffi
+        // SAFETY: returned pointer checked later
         let data = unsafe {
             rte_pktmbuf_adj(self.as_ptr(), len.try_into().map_err(Error::from)?).cast::<u8>()
         };
@@ -274,12 +277,12 @@ impl Mbuf {
     /// The chain segment limit exceeded.
     #[inline]
     pub fn chain_mbuf(&mut self, tail: Mbuf) -> StdResult<(), (Error, Mbuf)> {
-        // SAFETY: ffi
+        // SAFETY: *rte_mbuf pointers checked
         let errno = unsafe { rte_pktmbuf_chain(self.as_ptr(), tail.as_ptr()) };
         if let Err(err) = Error::from_ret(errno) {
             return Err((err, tail));
         }
-        #[allow(clippy::mem_forget)]
+        #[allow(clippy::mem_forget)] // deallocated with `head`
         mem::forget(tail);
         Ok(())
     }
@@ -317,7 +320,7 @@ unsafe impl Send for Mbuf {}
 impl Drop for Mbuf {
     #[inline]
     fn drop(&mut self) {
-        // SAFETY: ffi; this pointer is valid
+        // SAFETY: self pointer checked upon `new`
         #[allow(unsafe_code)]
         unsafe {
             rte_pktmbuf_free(self.as_ptr());
@@ -342,7 +345,7 @@ impl<'a> Iterator for MbufIter<'a> {
     #[allow(unsafe_code)]
     fn next(&mut self) -> Option<Self::Item> {
         let item = MbufRef::new(self.cur)?;
-        // SAFETY: self is valid since it's tested when initialized.
+        // SAFETY: `self.cur` checked in `MbufRef::new`
         self.cur = unsafe { (*self.cur).next };
         Some(item)
     }
@@ -365,7 +368,7 @@ impl<'a> Iterator for MbufIterMut<'a> {
     #[allow(unsafe_code)]
     fn next(&mut self) -> Option<Self::Item> {
         let item = MbufRefMut::new(self.cur)?;
-        // SAFETY: self is valid since it's tested when initialized.
+        // SAFETY: `self.cur` checked in `MbufRefMut::new`
         self.cur = unsafe { (*self.cur).next };
         Some(item)
     }
