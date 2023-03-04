@@ -133,16 +133,16 @@ impl Packet {
 mod tests {
     use super::Packet;
     use crate::{
-        eal::{self, IovaMode},
         mbuf::Mbuf,
         mempool::{Mempool, PktMempool},
         proto::{L3Protocol, L4Protocol},
+        test_utils,
     };
     use bytes::BytesMut;
 
     #[test]
     fn test() {
-        let _ = eal::Config::new().iova_mode(IovaMode::VA).enter();
+        test_utils::dpdk_setup();
         let mut pkt = Packet::new(L3Protocol::Ipv4, L4Protocol::Tcp);
         pkt.append(BytesMut::new());
         assert_eq!(pkt.frags.len(), 1);

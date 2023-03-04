@@ -12,14 +12,15 @@
 //!
 //! A simple example of setting up the environment:
 //!
-//! ```
+//! ```no_run
 //! use async_dpdk::eal::{self, IovaMode};
 //!
 //! eal::Config::new()
-//!     .enter()
 //!     .coremask(0x3f)
 //!     .device_probe(&["192.168.0.1", "192.168.0.2"])
+//!     .unwrap()
 //!     .iova_mode(IovaMode::VA)
+//!     .enter()
 //!     .unwrap();
 //! ```
 

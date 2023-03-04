@@ -1,6 +1,6 @@
 //! DPDK defined error codes.
 
-use dpdk_sys::{errno, rte_exit, rte_strerror};
+use dpdk_sys::{rte_errno_stub, rte_exit, rte_strerror};
 use std::{
     ffi::{IntoStringError, NulError},
     net::AddrParseError,
@@ -92,7 +92,7 @@ impl Error {
     pub fn from_errno() -> Error {
         // SAFETY: read mutable static variable
         #[allow(unsafe_code)]
-        let errno = unsafe { errno!() };
+        let errno = unsafe { rte_errno_stub() };
         errno.into()
     }
 

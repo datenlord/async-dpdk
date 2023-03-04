@@ -472,8 +472,8 @@ mod tests {
     use std::os::raw::c_void;
     use std::ptr;
 
-    use crate::eal::{self, IovaMode};
     use crate::mempool::{GenericMempool, Mempool};
+    use crate::test_utils;
 
     use super::MempoolObj;
 
@@ -507,7 +507,7 @@ mod tests {
 
     #[test]
     fn test() {
-        let _ = eal::Config::new().iova_mode(IovaMode::VA).enter();
+        test_utils::dpdk_setup();
         let mp: GenericMempool<SomePtr> = GenericMempool::create("mempool", 64).unwrap();
         assert!(mp.is_full());
         assert!(!mp.is_empty());

@@ -27,7 +27,7 @@ use std::{
 /// `Mbuf` is a safe wrapper of `rte_mbuf`, the original packet carrier in DPDK, whose memory
 /// layout is:
 ///
-/// ```
+/// ```ignore
 ///     ---------------------------------------------------------------------------------
 ///     |  rte_mbuf  | priv data | head room |          frame data          | tail room |
 ///     ---------------------------------------------------------------------------------
@@ -443,13 +443,13 @@ impl DerefMut for MbufRefMut<'_> {
 
 #[cfg(test)]
 mod tests {
-    use crate::eal::{self, IovaMode};
     use crate::mbuf::Mbuf;
     use crate::mempool::{Mempool, PktMempool};
+    use crate::test_utils;
 
     #[test]
     fn test() {
-        let _ = eal::Config::new().iova_mode(IovaMode::VA).enter();
+        test_utils::dpdk_setup();
 
         // Create a packet mempool.
         let mp = PktMempool::create("test", 10).unwrap();

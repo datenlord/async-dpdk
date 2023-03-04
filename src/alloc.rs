@@ -12,10 +12,18 @@
 //! # Examples
 //!
 //! ```
-//! eal::Config::new().iova_mode(IovaMode::VA).enter().unwrap();
-//! let t = alloc::malloc::<Test>();
+//! # use async_dpdk::alloc;
+//! # use async_dpdk::eal;
+//!
+//! #[derive(Copy, Clone, Default)]
+//! struct Point {
+//!     x: i32,
+//!     y: i32,
+//! }
+//! # let _ = eal::Config::new().enter();
+//! let p = alloc::malloc::<Point>().unwrap();
 //! unsafe {
-//!     alloc::free(t);
+//!     alloc::free(p);
 //! }
 //! ```
 
@@ -147,27 +155,22 @@ pub unsafe fn free<T>(obj: Box<T>) {
 
 #[cfg(test)]
 mod tests {
-    use crate::alloc;
-    use crate::eal::{self, IovaMode, LogLevel};
+    use crate::{alloc, test_utils};
+
+    #[repr(C)]
+    struct Test {
+        x: i32,
+        y: i64,
+    }
+    impl Default for Test {
+        fn default() -> Self {
+            Self { x: 1, y: 2 }
+        }
+    }
 
     #[test]
     fn test() {
-        #[repr(C)]
-        struct Test {
-            x: i32,
-            y: i64,
-        }
-        impl Default for Test {
-            fn default() -> Self {
-                Self { x: 1, y: 2 }
-            }
-        }
-
-        eal::Config::new()
-            .log_level(LogLevel::Debug)
-            .iova_mode(IovaMode::VA)
-            .enter()
-            .unwrap();
+        test_utils::dpdk_setup();
 
         let t1 = alloc::malloc::<Test>().unwrap();
         assert_eq!(t1.x, 1);

@@ -117,5 +117,6 @@ pub mod mbuf;
 pub mod mempool;
 pub mod packet;
 mod proto;
+mod test_utils;
 
 pub use errno::*;
