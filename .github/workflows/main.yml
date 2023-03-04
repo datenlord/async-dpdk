@@ -1,0 +1,79 @@
+name: CI
+
+on: [push, pull_request]
+
+env:
+  DPDK_VERSION: dpdk-stable-21.11.1
+
+jobs:
+  fmt:
+    name: Code style check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: rustfmt
+      - name: Check code format
+        uses: actions-rs/cargo@v1
+        with:
+          command: fmt
+          args: --all -- --check
+
+  clippy-test:
+    name: Clippy check and test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - uses: actions-rs/toolchain@v1
+        with:
+          profile: minimal
+          toolchain: stable
+          components: clippy
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install python3-pip libnuma-dev python3-pyelftools
+          sudo pip3 install meson ninja
+      - name: Cache DPDK executable
+        id: cache-dpdk
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.DPDK_VERSION }}
+          key: ${{ runner.os }}-all-${{ env.DPDK_VERSION }}
+      - name: Install DPDK
+        if: steps.cache-dpdk.outputs.cache-hit
+        run: |
+          cd ${{ env.DPDK_VERSION }}/build
+          sudo ninja install
+          cd -
+      - name: Build and install DPDK
+        if: steps.cache-dpdk.outputs.cache-hit != 'true'
+        run: sudo sh scripts/install.sh
+      - name: Clippy
+        uses: actions-rs/cargo@v1
+        with:
+          command: clippy
+      - name: Cache the Cargo dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Test
+        run: |
+          chmod +x scripts/setup.sh && sudo ./scripts/setup.sh setup
+          sudo env PATH=$PATH rustup default stable
+          sudo env PATH=$PATH LD_LIBRARY_PATH=/usr/local/lib/x86_64-linux-gnu cargo test -- --test-threads=1
+      - name: Setup tmate session on failure
+        if: ${{ failure() }}
+        uses: mxschmitt/action-tmate@v3
+      # - name: Environment teardown
+      #   if: ${{ always() }}
+      #   run: sudo ./scripts/setup.sh teardown
+
