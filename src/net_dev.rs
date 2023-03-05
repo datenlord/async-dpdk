@@ -4,12 +4,10 @@ use crate::{
     eth_dev::{EthDev, TxSender},
     Error, Result,
 };
-use dpdk_sys::{
-    cstring, rte_eth_dev_info, rte_eth_dev_info_get, rte_ether_addr, rte_free, rte_malloc,
-};
+use dpdk_sys::{rte_eth_dev_info, rte_eth_dev_info_get, rte_ether_addr, rte_free, rte_malloc};
 use lazy_static::lazy_static;
 use log::{debug, error};
-use std::{mem, net::IpAddr, sync::RwLock};
+use std::{ffi::CString, mem, net::IpAddr, sync::RwLock};
 
 lazy_static! {
     /// Holding all probed Inet Devices.
@@ -43,13 +41,10 @@ pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
     for (i, addr) in addrs.into_iter().enumerate().take(ndev) {
         #[allow(clippy::cast_possible_truncation)]
         let port_id = i as u16;
+        let name = CString::new("rte_eth_dev_info").map_err(Error::from)?;
         // SAFETY: ffi
         let dev_info = unsafe {
-            let dev_info = rte_malloc(
-                cstring!("rte_eth_dev_info"),
-                mem::size_of::<rte_eth_dev_info>(),
-                0,
-            );
+            let dev_info = rte_malloc(name.as_ptr(), mem::size_of::<rte_eth_dev_info>(), 0);
             let errno = rte_eth_dev_info_get(port_id, dev_info.cast());
             Error::from_ret(errno)?;
             &mut *(dev_info.cast::<rte_eth_dev_info>())

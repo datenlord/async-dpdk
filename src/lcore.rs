@@ -2,7 +2,7 @@
 
 #![allow(unsafe_code)]
 use dpdk_sys::{
-    rte_eal_lcore_role, rte_lcore_count, rte_lcore_id, rte_lcore_role_t_ROLE_NON_EAL,
+    rte_eal_lcore_role, rte_lcore_count, rte_lcore_id_stub, rte_lcore_role_t_ROLE_NON_EAL,
     rte_lcore_role_t_ROLE_OFF, rte_lcore_role_t_ROLE_RTE, rte_lcore_role_t_ROLE_SERVICE,
     rte_socket_count, rte_socket_id,
 };
@@ -27,7 +27,7 @@ pub enum Role {
 #[must_use]
 pub fn id() -> u32 {
     // SAFETY: ffi
-    unsafe { rte_lcore_id() }
+    unsafe { rte_lcore_id_stub() }
 }
 
 /// Get lcore count.

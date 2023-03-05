@@ -3,18 +3,19 @@
 use crate::mempool::{Mempool, MempoolInner};
 use crate::{Error, Result};
 use dpdk_sys::{
-    cstring, rte_mbuf, rte_mbuf_buf_addr, rte_pktmbuf_adj, rte_pktmbuf_alloc,
-    rte_pktmbuf_alloc_bulk, rte_pktmbuf_append, rte_pktmbuf_chain, rte_pktmbuf_clone,
-    rte_pktmbuf_free, rte_pktmbuf_headroom, rte_pktmbuf_pool_create, rte_pktmbuf_prepend,
-    rte_pktmbuf_tailroom, rte_pktmbuf_trim, RTE_MBUF_DEFAULT_BUF_SIZE, RTE_MBUF_F_INDIRECT,
+    rte_mbuf, rte_mbuf_buf_addr, rte_pktmbuf_adj, rte_pktmbuf_alloc, rte_pktmbuf_alloc_bulk,
+    rte_pktmbuf_append, rte_pktmbuf_chain, rte_pktmbuf_clone, rte_pktmbuf_free,
+    rte_pktmbuf_headroom, rte_pktmbuf_pool_create, rte_pktmbuf_prepend, rte_pktmbuf_tailroom,
+    rte_pktmbuf_trim, RTE_MBUF_DEFAULT_BUF_SIZE, RTE_MBUF_F_INDIRECT,
 };
+use std::ffi::CString;
 use std::{mem::MaybeUninit, ptr::NonNull, slice};
 
 /// In this crate we use usize as length for convenience, however DPDK use u16 to represent
 /// length, we should check the `len` argument is not too large for u16.
 macro_rules! check_len {
     ($len:expr) => {
-        if $len < u16::MAX as usize {
+        if $len > u16::MAX as usize {
             return Err(Error::InvalidArg);
         }
     };
@@ -86,9 +87,10 @@ impl Mbuf {
     pub fn create_mp(name: &str, n: u32, cache_size: u32, socket_id: i32) -> Result<Mempool> {
         // SAFETY: ffi
         let ptr = unsafe {
+            let name = CString::new(name).map_err(Error::from)?;
             #[allow(clippy::cast_possible_truncation)] // 0x880 < u16::MAX
             rte_pktmbuf_pool_create(
-                cstring!(name),
+                name.as_ptr(),
                 n,
                 cache_size,
                 0,
@@ -180,7 +182,9 @@ impl Mbuf {
         let m = self.as_ptr();
         // SAFETY: ffi; memory is initialized and valid
         unsafe {
-            let data = rte_mbuf_buf_addr(m, (*m).pool).add((*m).data_off as _);
+            let data = rte_mbuf_buf_addr(m, (*m).pool)
+                .add((*m).data_off as _)
+                .cast();
             slice::from_raw_parts(data, (*m).data_len as _)
         }
     }

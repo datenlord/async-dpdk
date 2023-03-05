@@ -8,6 +8,7 @@ use crate::{Error, Result};
 use dpdk_sys::*;
 use log::{debug, error, info, trace, warn};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::CString;
 use std::mem;
 use std::ptr::{self, NonNull};
 use std::sync::{
@@ -109,10 +110,11 @@ impl Drop for IpFragmentTable {
 impl IpFragDeathRow {
     /// Create a new `IpFragDeathRow`.
     fn new(socket_id: i32) -> Result<Self> {
+        let name = CString::new("death_row").map_err(Error::from)?;
         // SAFETY: ffi, check not null later.
         let ptr = unsafe {
             rte_zmalloc_socket(
-                cstring!("death_row"),
+                name.as_ptr(),
                 mem::size_of::<rte_ip_frag_death_row>(),
                 0,
                 socket_id,

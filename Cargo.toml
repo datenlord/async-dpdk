@@ -12,12 +12,13 @@ repository = "https://github.com/datenlord/async-dpdk"
 
 [dependencies]
 bytes = "1.2.1"
-dpdk-sys = { git = "https://github.com/datenlord/dpdk-sys", rev = "febf1cc" }
+# dpdk-sys = { git = "https://github.com/datenlord/dpdk-sys", rev = "febf1cc" }
+dpdk-sys = { package = "libdpdk-sys", path = "../dpdk-sys" }
 lazy_static = "1.4"
 libc = "0.2"
 log = "0.4"
 thiserror = "1.0"
 tokio = { version = "1.20", features = ["full"] }
 
-[patch.'https://github.com/datenlord/dpdk-sys']
-dpdk-sys = { path = "../dpdk-sys" }
+# [patch.'https://github.com/datenlord/dpdk-sys']
+# dpdk-sys = { path = "../dpdk-sys" }

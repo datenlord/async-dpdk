@@ -110,14 +110,13 @@ impl UdpSocket {
             .map_err(|_| Error::InvalidArg)?
             .next()
             .ok_or(Error::InvalidArg)?;
-
         let len = buf.len();
         let l2_sz = ETHER_HDR_LEN;
         let l3_sz = L3Protocol::Ipv4.length();
         let l4_sz = L4Protocol::UDP.length();
 
-        if buf.len().wrapping_add(l3_sz as _).wrapping_add(l4_sz as _) < u16::MAX as usize {
-            return Err(Error::InvalidArg);
+        if buf.len().wrapping_add(l3_sz as _).wrapping_add(l4_sz as _) > u16::MAX as usize {
+            return Err(Error::TooBig);
         }
 
         let mut hdr = BytesMut::with_capacity(l2_sz.wrapping_add(l3_sz).wrapping_add(l4_sz) as _);
