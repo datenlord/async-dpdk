@@ -61,7 +61,6 @@ impl Default for SockTableInner {
     fn default() -> Self {
         Self {
             open: [SockState::default(); MAX_SOCK_NUM as usize],
-
             free_fd: (0..MAX_SOCK_NUM).into_iter().collect(),
         }
     }

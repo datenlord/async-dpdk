@@ -151,7 +151,8 @@ impl UdpSocket {
             // fill l2 header
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
             #[allow(clippy::cast_ptr_alignment)]
-            let ether_hdr = unsafe { &mut *(hdr.as_mut_ptr().cast::<rte_ether_hdr>()) };
+            let ether_hdr =
+                unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_ether_hdr>()) };
             ether_hdr.src_addr = self.eth_addr;
             // TODO send to real mac addr. implement ARP in the future!
             ether_hdr.dst_addr.addr_bytes.copy_from_slice(&[0xff; 6]);
@@ -164,7 +165,7 @@ impl UdpSocket {
 
             // fill l3 header
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
-            let ip_hdr = unsafe { &mut *(hdr.as_mut_ptr().cast::<rte_ipv4_hdr>()) };
+            let ip_hdr = unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_ipv4_hdr>()) };
             ip_hdr.version_ihl_union.version_ihl = 0x45; // version = 4, ihl = 5
             ip_hdr.type_of_service = 0;
             ip_hdr.total_length = total_len.to_be();
@@ -188,7 +189,7 @@ impl UdpSocket {
             }
 
             // SAFETY: hdr size = l2_sz + l3_sz + l4_sz
-            let udp_hdr = unsafe { &mut *(hdr.as_mut_ptr().cast::<rte_udp_hdr>()) };
+            let udp_hdr = unsafe { &mut *(hdr.chunk_mut()[..].as_mut_ptr().cast::<rte_udp_hdr>()) };
             udp_hdr.src_port = self.port;
             udp_hdr.dst_port = addr.port();
             udp_hdr.dgram_len = payload_len.wrapping_add(l4_sz).to_be();
@@ -198,7 +199,6 @@ impl UdpSocket {
             unsafe {
                 hdr.advance_mut(l4_sz as _);
             }
-
             pkt.append(hdr);
             pkt.append(BytesMut::from(buf));
         }
