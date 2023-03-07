@@ -86,8 +86,7 @@ impl IpFragmentTable {
         let max_cycles = unsafe {
             // ceiling(tsc / MS_PER_S ^ 2)
             rte_get_tsc_hz()
-                .checked_add(MS_PER_S.saturating_sub(1))
-                .ok_or(Error::Overflow)?
+                .saturating_add(MS_PER_S.saturating_sub(1))
                 .saturating_div(MS_PER_S.saturating_pow(2))
         };
         // SAFETY: pointer checked later
@@ -245,12 +244,11 @@ fn handle_ether(
                     debug!("Packet need fragmentation");
                     // SAFETY: pointers checked
                     let mo = unsafe {
-                        let tms = rte_rdtsc();
                         rte_ipv4_frag_reassemble_packet(
                             tbl.as_mut_ptr(),
                             dr.as_mut_ptr(),
                             m.as_ptr(),
-                            tms,
+                            rte_rdtsc(),
                             ptr.cast(),
                         )
                     };
@@ -578,7 +576,7 @@ impl TxBuffer {
     fn buffer(&mut self, m: Mbuf) -> Result<()> {
         // Put the new mbuf at the end of buffer.
         if m.pkt_len() < RTE_ETHER_MTU as usize {
-            if TX_BUF_SIZE < self.mbufs.len().wrapping_add(1) {
+            if TX_BUF_SIZE < self.mbufs.len() {
                 return Err(Error::NoBuf);
             }
             self.mbufs.push_back(m.as_ptr());
@@ -592,7 +590,7 @@ impl TxBuffer {
         let (msg1, msg2) = self.mbufs.as_mut_slices();
         let mut sent = 0_u16;
         let mut unsent = true;
-
+        // XXX pop_front???
         if !msg1.is_empty() {
             #[allow(clippy::cast_possible_truncation)]
             // SAFETY: msg1 length checked

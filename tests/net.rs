@@ -91,7 +91,7 @@ mod net {
     }
 
     #[cfg(test)]
-    mod test_fragementation {
+    mod test_fragmentation {
         use super::*;
 
         const LEN: usize = 2000; // > Ethernet MTU
