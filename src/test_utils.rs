@@ -8,6 +8,7 @@ static SETUP: Once = Once::new();
 
 pub(crate) fn dpdk_setup() {
     SETUP.call_once(|| {
-        eal::Config::new().no_hugepages(true).enter().unwrap();
+        env_logger::init();
+        eal::Config::new().enter().unwrap();
     })
 }

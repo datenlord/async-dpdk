@@ -92,7 +92,7 @@ impl IpFragmentTable {
                 .ok_or(Error::Overflow)?
                 .saturating_div(MS_PER_S.saturating_pow(2))
         };
-        // SAFETY: ffi
+        // SAFETY: pointer checked later
         let ptr = unsafe {
             rte_ip_frag_table_create(
                 IP_FRAG_TABLE_BUCKET_NUM,
@@ -114,7 +114,7 @@ impl IpFragmentTable {
 #[allow(unsafe_code)]
 impl Drop for IpFragmentTable {
     fn drop(&mut self) {
-        // SAFETY: ffi
+        // SAFETY: tbl pointer checked in initialization
         unsafe { rte_ip_frag_table_destroy(self.as_mut_ptr()) };
     }
 }
@@ -124,7 +124,7 @@ impl IpFragDeathRow {
     /// Create a new `IpFragDeathRow`.
     fn new(socket_id: i32) -> Result<Self> {
         let name = CString::new("death_row").map_err(Error::from)?;
-        // SAFETY: ffi, check not null later.
+        // SAFETY: pointer checked later
         let ptr = unsafe {
             rte_zmalloc_socket(
                 name.as_ptr(),
@@ -146,7 +146,7 @@ impl IpFragDeathRow {
 #[allow(unsafe_code)]
 impl Drop for IpFragDeathRow {
     fn drop(&mut self) {
-        // SAFETY: ffi
+        // SAFETY: pointer validity check in `IpFragDeathRow::new`
         unsafe {
             rte_free(self.as_mut_ptr().cast());
         }
@@ -223,7 +223,10 @@ fn parse_ether_proto(m: &Mbuf) -> Option<(u32, u8)> {
     Some((ether_type, proto_id))
 }
 
-/// Handle L2 frame.
+/// Handle L2 frame and parse the Ethernet header.
+///
+/// The protocols of Network and Transport Layer (L3 & L4) will be resolved, and the
+/// packet will be dispatched to the corresponding L3 & L4 handling function.
 #[inline]
 #[allow(unsafe_code)]
 fn handle_ether(
@@ -237,12 +240,12 @@ fn handle_ether(
         match ether_type {
             RTE_ETHER_TYPE_IPV4 => {
                 let ptr = m.data_slice_mut().as_mut_ptr();
-                // SAFETY: ffi
+                // SAFETY: rte_mbuf data pointer cannot be null
                 let m = if unsafe { rte_ipv4_frag_pkt_is_fragmented(ptr.cast()) } == 0 {
                     Some(m)
                 } else {
                     debug!("Packet need fragmentation");
-                    // SAFETY: ffi
+                    // SAFETY: pointers checked
                     let mo = unsafe {
                         let tms = rte_rdtsc();
                         rte_ipv4_frag_reassemble_packet(
@@ -299,7 +302,7 @@ impl RxAgent {
                 let task_iter = tasks.iter();
                 for &(port_id, queue_id) in task_iter {
                     let mut ptrs = vec![ptr::null_mut(); MAX_PKT_BURST as usize];
-                    // SAFETY: ffi
+                    // SAFETY: `n` packets at the front are valid
                     let n = unsafe {
                         rte_eth_rx_burst(port_id, queue_id, ptrs.as_mut_ptr(), MAX_PKT_BURST)
                     };
@@ -330,24 +333,46 @@ impl RxAgent {
     /// Register a (`port_id`, `queue_id`) to an `RxAgent`.
     ///
     /// Adds a (`port_id`, `queue_id`) pair to the set to be polled.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an `Error::NotStart` if the agent had already been stopped.
+    /// - Returns an `Error::Already` if the pair had already been registered.
     pub(crate) fn register(self: &Arc<Self>, port_id: u16, queue_id: u16) -> Result<()> {
-        let _ = self
+        if !self.running.load(Ordering::Acquire) {
+            return Err(Error::NotStart);
+        }
+        if !self
             .tasks
             .lock()
             .map_err(Error::from)?
-            .insert((port_id, queue_id));
+            .insert((port_id, queue_id))
+        {
+            return Err(Error::Already);
+        }
         Ok(())
     }
 
     /// Unregister a (`port_id`, `queue_id`) from an `RxAgent`.
     ///
     /// Removes the (`port_id`, `queue_id`) pair from the polled set.
+    ///
+    /// # Errors
+    ///
+    /// - Returns an `Error::NotStart` if the agent had already been stopped.
+    /// - Returns an `Error::NotExist` if the pair had not been registered.
     pub(crate) fn unregister(self: &Arc<Self>, port_id: u16, queue_id: u16) -> Result<()> {
-        let _ = self
+        if !self.running.load(Ordering::Acquire) {
+            return Err(Error::NotStart);
+        }
+        if !self
             .tasks
             .lock()
             .map_err(Error::from)?
-            .remove(&(port_id, queue_id));
+            .remove(&(port_id, queue_id))
+        {
+            return Err(Error::NotExist);
+        }
         Ok(())
     }
 }
@@ -393,7 +418,7 @@ impl TxAgent {
                 }
             }
         });
-        let _prev = tasks.insert((port_id, queue_id), handle);
+        assert!(tasks.insert((port_id, queue_id), handle).is_none());
         Ok(tx)
     }
 
@@ -444,7 +469,8 @@ impl TxBuffer {
     #[inline]
     fn populate_ether_hdr(ether_src: &rte_ether_hdr, mbufs: &[*mut rte_mbuf]) {
         for &m in mbufs {
-            // SAFETY: ffi
+            // SAFETY: DPDK fragmented packets are newly allocated with an unused headroom of 128 bytes,
+            // which is larger than an Ethernet header. Thus the returned pointer is valid.
             unsafe {
                 #[allow(clippy::cast_ptr_alignment)] // allowed in DPDK
                 let ether_dst = rte_pktmbuf_prepend(m, ETHER_HDR_LEN).cast::<rte_ether_hdr>();
@@ -466,16 +492,16 @@ impl TxBuffer {
         }
         let mut frags: Vec<*mut rte_mbuf> = vec![ptr::null_mut(); exp_nb_frags];
         let pm = m.as_ptr();
-        // SAFETY: ffi
+        // SAFETY: pm checked in `Mbuf::new`
         #[allow(clippy::cast_ptr_alignment)]
         let ether_src = unsafe {
             &*(rte_mbuf_buf_addr(pm, (*pm).pool)
                 .add((*pm).data_off as _)
                 .cast::<rte_ether_hdr>())
         };
-        // SAFETY: ffi
+        // SAFETY: pm checked in m's initialization
         let _ = unsafe { rte_pktmbuf_adj(pm, ETHER_HDR_LEN) };
-        // SAFETY: ffi
+        // SAFETY: `return_val` packets at the front are valid
         let errno = unsafe {
             let l3_type = (*pm).packet_type_union.packet_type & RTE_PTYPE_L3_MASK;
             if l3_type == RTE_PTYPE_L3_IPV4 {
@@ -537,7 +563,7 @@ impl TxBuffer {
 
         if !msg1.is_empty() {
             #[allow(clippy::cast_possible_truncation)]
-            // SAFETY: ffi
+            // SAFETY: msg1 length checked
             let sent1 = unsafe {
                 rte_eth_tx_burst(
                     self.port_id,
@@ -553,7 +579,7 @@ impl TxBuffer {
         }
         if !unsent && !msg2.is_empty() {
             #[allow(clippy::cast_possible_truncation)]
-            // SAFETY: ffi
+            // SAFETY: msg2 length checked
             let sent2 = unsafe {
                 rte_eth_tx_burst(
                     self.port_id,
