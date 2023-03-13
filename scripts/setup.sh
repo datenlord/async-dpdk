@@ -5,8 +5,10 @@ if [ "$1" == "setup" ]; then
     mountpoint -q /dev/hugepages || mount -t hugetlbfs nodev /dev/hugepages
     echo 32 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages
     
+    modprobe vfio
     echo 1 > /sys/module/vfio/parameters/enable_unsafe_noiommu_mode
-    modprobe e1000 vfio vfio-pci
+    modprobe e1000
+    modprobe vfio-pci
     
     chmod 600 /sys/bus/pci/drivers/e1000/bind
     chmod 600 /sys/bus/pci/drivers/e1000/unbind

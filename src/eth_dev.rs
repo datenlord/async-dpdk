@@ -89,13 +89,12 @@ impl EthDev {
     #[allow(clippy::similar_names)] // tx and rx are DPDK terms
     pub(crate) fn new(port_id: u16, n_rxq: u16, n_txq: u16) -> Result<Self> {
         let mut dev_info = MaybeUninit::<rte_eth_dev_info>::uninit();
-        // SAFETY: ffi
+        // SAFETY: the returned `dev_info` is to be verified with the check on errno
         let errno = unsafe { rte_eth_dev_info_get(port_id, dev_info.as_mut_ptr()) };
         Error::from_ret(errno)?;
         // SAFETY: `dev_info` init in `rte_eth_dev_info_get`
         let dev_info = unsafe { dev_info.assume_init() };
 
-        // SAFETY: ffi
         let eth_conf = MaybeUninit::<rte_eth_conf>::zeroed();
         // SAFETY: `eth_conf` set to zero, which is valid
         let mut eth_conf = unsafe { eth_conf.assume_init() };
@@ -103,7 +102,7 @@ impl EthDev {
             // Enable fast release of mbufs if supported by the hardware.
             eth_conf.txmode.offloads |= RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE;
         }
-        // SAFETY: ffi
+        // SAFETY: `eth_conf` is ok to be zerod, representing default configuration
         #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_configure(port_id, n_rxq, n_txq, &eth_conf) };
         Error::from_ret(errno)?;
@@ -114,7 +113,7 @@ impl EthDev {
         #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_adjust_nb_rx_tx_desc(port_id, &mut n_rxd, &mut n_txd) };
         Error::from_ret(errno)?;
-        // SAFETY: ffi
+        // SAFETY: returned `socket_id` to be checked later
         let socket_id = unsafe { rte_eth_dev_socket_id(port_id) };
         if socket_id < 0 {
             return Err(Error::InvalidArg); // port_id is invalid
@@ -190,11 +189,11 @@ impl EthDev {
         let rx_agent = RxAgent::start(self.socket_id);
         let tx_agent = TxAgent::start();
 
-        // SAFETY: ffi
+        // SAFETY: `port_id` validity verified
         let errno = unsafe { rte_eth_dev_start(self.port_id) };
         Error::from_ret(errno)?;
         debug!("Device {} successfully started", self.port_id);
-        // SAFETY: ffi
+        // SAFETY: `ptypes` is ok to be NULL
         #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_set_ptypes(self.port_id, 0, ptr::null_mut(), 0) };
         Error::from_ret(errno)?;
@@ -240,7 +239,7 @@ impl EthDev {
         }
 
         rx_agent.stop();
-        // SAFETY: ffi
+        // SAFETY: `port_id` validity verified
         let errno = unsafe { rte_eth_dev_stop(self.port_id) };
         Error::from_ret(errno)?;
         debug!("Device {} successfully stopped", self.port_id);
@@ -251,7 +250,7 @@ impl EthDev {
     #[inline]
     pub(crate) fn mac_addr(&self) -> Result<rte_ether_addr> {
         let mut ether_addr = MaybeUninit::<rte_ether_addr>::uninit();
-        // SAFETY: ffi
+        // SAFETY: errno checked later
         let errno = unsafe { rte_eth_macaddr_get(self.port_id, ether_addr.as_mut_ptr()) };
         Error::from_ret(errno)?;
         // SAFETY: `rte_ether_addr` is successfully initialized due to no error code.
@@ -288,7 +287,7 @@ impl EthDev {
 impl Drop for EthDev {
     #[inline]
     fn drop(&mut self) {
-        // SAFETY: ffi
+        // SAFETY: `port_id` validity verified
         #[allow(unsafe_code)]
         let errno = unsafe { rte_eth_dev_close(self.port_id) };
         if errno < 0 {
@@ -355,7 +354,7 @@ impl EthRxQueue {
         let mp = PktMempool::create(format!("rx_{port_id}_{queue_id}").as_str(), n_elem)?;
         let mut rx_conf = dev_info.default_rxconf;
         rx_conf.offloads = eth_conf.rxmode.offloads;
-        // SAFETY: ffi
+        // SAFETY: `mp` checked in initialization
         let errno = unsafe {
             #[allow(clippy::cast_sign_loss)] // sign checked
             rte_eth_rx_queue_setup(
@@ -404,12 +403,11 @@ impl EthTxQueue {
 #[cfg(test)]
 mod tests {
     use super::EthDev;
-    use crate::eal;
+    use crate::test_utils;
 
     #[tokio::test]
     async fn test() {
-        env_logger::init();
-        let _ = eal::Config::new().enter();
+        test_utils::dpdk_setup();
         let mut dev = EthDev::new(0, 1, 1).unwrap();
         dev.start().unwrap();
         dev.stop().unwrap();
