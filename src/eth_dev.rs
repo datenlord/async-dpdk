@@ -180,14 +180,15 @@ impl EthDev {
     /// # Errors
     ///
     /// Possible reasons:
-    ///  - `Error::TempUnavail`: temporary error, retry later.
-    ///  - Failed to register queues on `TxAgent` and `RxAgent`.
+    /// - `Error::TempUnavail`: temporary error, retry later.
+    /// - Failed to create a `TxAgent`.
+    /// - Failed to register queues on `TxAgent` and `RxAgent`.
     #[inline]
     pub(crate) fn start(&mut self) -> Result<()> {
         // XXX now we use one TxAgent and one RxAgent for each EthDev.
         // Make the mapping more flexible.
         let rx_agent = RxAgent::start(self.socket_id);
-        let tx_agent = TxAgent::start();
+        let tx_agent = TxAgent::start()?;
 
         // SAFETY: `port_id` validity verified
         let errno = unsafe { rte_eth_dev_start(self.port_id) };

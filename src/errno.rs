@@ -6,9 +6,12 @@ use std::{
     net::AddrParseError,
     num::TryFromIntError,
     os::raw::c_int,
-    sync::PoisonError,
+    sync::{mpsc::RecvError as StdRecvError, mpsc::SendError as StdSendError, PoisonError},
 };
-use tokio::sync::{mpsc::error::SendError, oneshot::error::RecvError};
+use tokio::sync::{
+    mpsc::error::SendError as TokioMpscSendError,
+    oneshot::error::RecvError as TokioOneshotRecvError,
+};
 
 /// async-dpdk defined Result.
 pub type Result<T> = std::result::Result<T, Error>;
@@ -168,16 +171,30 @@ impl<T> From<PoisonError<T>> for Error {
     }
 }
 
-impl<T> From<SendError<T>> for Error {
+impl<T> From<TokioMpscSendError<T>> for Error {
     #[inline]
-    fn from(_error: SendError<T>) -> Self {
+    fn from(_error: TokioMpscSendError<T>) -> Self {
         Error::BrokenPipe
     }
 }
 
-impl From<RecvError> for Error {
+impl From<TokioOneshotRecvError> for Error {
     #[inline]
-    fn from(_error: RecvError) -> Self {
+    fn from(_error: TokioOneshotRecvError) -> Self {
+        Error::BrokenPipe
+    }
+}
+
+impl<T> From<StdSendError<T>> for Error {
+    #[inline]
+    fn from(_error: StdSendError<T>) -> Self {
+        Error::BrokenPipe
+    }
+}
+
+impl From<StdRecvError> for Error {
+    #[inline]
+    fn from(_error: StdRecvError) -> Self {
         Error::BrokenPipe
     }
 }
