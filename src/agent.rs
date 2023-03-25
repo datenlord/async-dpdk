@@ -17,7 +17,7 @@ use dpdk_sys::{
     RTE_PTYPE_L3_IPV6, RTE_PTYPE_L3_MASK,
 };
 use log::{debug, error, info, trace, warn};
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet, VecDeque};
 use std::ffi::CString;
 use std::mem::{self, ManuallyDrop};
 use std::ptr::{self, NonNull};
@@ -377,6 +377,12 @@ impl RxAgent {
     }
 }
 
+impl Drop for RxAgent {
+    fn drop(&mut self) {
+        self.running.store(false, Ordering::Release);
+    }
+}
+
 #[allow(unsafe_code)]
 impl TxAgent {
     /// Start a `TxBuffer`, spawn a thread to do the sending job.
@@ -404,9 +410,11 @@ impl TxAgent {
         queue_id: u16,
     ) -> Result<mpsc::Sender<Mbuf>> {
         let mut tasks = self.tasks.lock().map_err(Error::from)?;
-        if tasks.contains_key(&(port_id, queue_id)) {
+        let entry = tasks.entry((port_id, queue_id));
+        if matches!(entry, Entry::Occupied(_)) {
             return Err(Error::Already);
         }
+
         let (tx, mut rx) = mpsc::channel::<Mbuf>(TX_CHAN_SIZE);
         let handle = self.rt.spawn(async move {
             let mut txbuf = TxBuffer::new(port_id, queue_id);
@@ -418,7 +426,9 @@ impl TxAgent {
                 }
             }
         });
-        assert!(tasks.insert((port_id, queue_id), handle).is_none());
+        #[allow(clippy::let_underscore_future)] // spawned future polled in background
+        let _ = entry.or_insert(handle);
+
         Ok(tx)
     }
 
