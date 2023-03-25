@@ -19,7 +19,7 @@ use dpdk_sys::{
 use log::{debug, error, info, trace, warn};
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet, VecDeque};
 use std::ffi::CString;
-use std::mem::{self, ManuallyDrop};
+use std::mem;
 use std::ptr::{self, NonNull};
 use std::sync::{
     atomic::{AtomicBool, Ordering},
@@ -61,7 +61,7 @@ pub(crate) struct RxAgent {
 /// An agent thread doing sending.
 pub(crate) struct TxAgent {
     /// Single-threaded `Runtime`.
-    rt: ManuallyDrop<Runtime>,
+    rt: Option<Runtime>,
     /// For each queue registered, there's a Task polling it.
     tasks: Mutex<BTreeMap<(u16, u16), JoinHandle<()>>>,
 }
@@ -386,24 +386,30 @@ impl Drop for RxAgent {
 #[allow(unsafe_code)]
 impl TxAgent {
     /// Start a `TxBuffer`, spawn a thread to do the sending job.
-    pub(crate) fn start() -> Arc<Self> {
-        #[allow(clippy::unwrap_used)]
-        let rt = Builder::new_multi_thread()
-            .worker_threads(1)
-            .thread_name("dpdk-tx-agent")
-            .build()
-            .unwrap();
+    pub(crate) fn start() -> Result<Arc<Self>> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = std::thread::spawn(move || {
+            #[allow(clippy::unwrap_used)] // impossible to panic since io and timer disabled
+            let rt = Builder::new_current_thread().build().unwrap();
+            tx.send(rt).map_err(Error::from)?;
+            Result::<()>::Ok(())
+        });
+        let rt = rx.recv().map_err(Error::from)?;
         let this = TxAgent {
-            rt: ManuallyDrop::new(rt),
+            rt: Some(rt),
             tasks: Mutex::new(BTreeMap::new()),
         };
-        Arc::new(this)
+        Ok(Arc::new(this))
     }
 
     /// Register a (`port_id`, `queue_id`) to a `TxAgent`.
     ///
-    /// Spawn a new `Task` polling the given queue. It will return an error if the caller tries to
-    /// register a queue that is already registered.
+    /// It will spawn a new `Task` polling the given queue.
+    ///
+    /// # Errors
+    ///
+    /// - `Error::Already`: if the caller tries to register a queue that is
+    /// already registered.
     pub(crate) fn register(
         self: &Arc<Self>,
         port_id: u16,
@@ -416,7 +422,7 @@ impl TxAgent {
         }
 
         let (tx, mut rx) = mpsc::channel::<Mbuf>(TX_CHAN_SIZE);
-        let handle = self.rt.spawn(async move {
+        let handle = self.rt.as_ref().ok_or(Error::NotStart)?.spawn(async move {
             let mut txbuf = TxBuffer::new(port_id, queue_id);
             while let Some(m) = rx.recv().await {
                 let res = txbuf.buffer(m);
@@ -434,8 +440,12 @@ impl TxAgent {
 
     /// Unregister a (`port_id`, `queue_id`) from a `TxAgent`.
     ///
-    /// Aborts the specific `Task` doing polling. It will return an error if the caller tries to
-    /// unregister a queue that is not registered.
+    /// It will aborts the specific `Task` doing polling.
+    ///
+    /// # Errors
+    ///
+    /// - `Error::NotExist`: if the caller tries to unregister a queue that is
+    /// not registered.
     pub(crate) fn unregister(self: &Arc<Self>, port_id: u16, queue_id: u16) -> Result<()> {
         let handle = self
             .tasks
@@ -445,6 +455,21 @@ impl TxAgent {
             .ok_or(Error::NotExist)?;
         handle.abort();
         Ok(())
+    }
+}
+
+impl Drop for TxAgent {
+    fn drop(&mut self) {
+        // cancel tasks
+        if let Ok(mut tasks) = self.tasks.lock() {
+            for (_, handle) in tasks.iter() {
+                handle.abort();
+            }
+            tasks.clear();
+        }
+        if let Some(rt) = self.rt.take() {
+            rt.shutdown_background();
+        }
     }
 }
 
@@ -606,5 +631,44 @@ impl TxBuffer {
             let _ = self.mbufs.pop_front(); // sent messages
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RxAgent, TxAgent};
+    use crate::{test_utils, Error};
+
+    #[tokio::test]
+    async fn test_tx_agent() {
+        test_utils::dpdk_setup();
+        let tx_agent = TxAgent::start().unwrap();
+        let _ = tx_agent.register(0, 0).unwrap();
+        assert!(matches!(
+            tx_agent.register(0, 0).unwrap_err(),
+            Error::Already
+        ));
+        tx_agent.unregister(0, 0).unwrap();
+        assert!(matches!(
+            tx_agent.unregister(0, 0).unwrap_err(),
+            Error::NotExist
+        ));
+    }
+
+    #[tokio::test]
+    async fn test_rx_agent() {
+        test_utils::dpdk_setup();
+        let rx_agent = RxAgent::start(0);
+        rx_agent.register(0, 0).unwrap();
+        assert!(matches!(
+            rx_agent.register(0, 0).unwrap_err(),
+            Error::Already
+        ));
+        rx_agent.unregister(0, 0).unwrap();
+        assert!(matches!(
+            rx_agent.unregister(0, 0).unwrap_err(),
+            Error::NotExist
+        ));
+        rx_agent.stop();
     }
 }
