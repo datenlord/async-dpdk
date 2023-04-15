@@ -3,6 +3,62 @@
 //! helper to ensure that objects are padded to spread them equally on all DRAM or DDR3 channels.
 //!
 //! In DPDK apps, mempools are widely used in the memory management for packet buffers.
+//!
+//! # Examples
+//!
+//! A simple example using mempool to store net packets:
+//!
+//! ```
+//! # use async_dpdk::mbuf::Mbuf;
+//! # use async_dpdk::mempool::{Mempool, PktMempool};
+//!
+//! # let _ = async_dpdk::eal::Config::new().enter();
+//! let mp = PktMempool::create("pktmbuf", 512).unwrap();
+//! let mut mbuf = Mbuf::new(&mp).unwrap();
+//! // Append 10 bytes to `Mbuf`.
+//! let data = mbuf.append(10).unwrap();
+//! data.copy_from_slice("payloadxxx".as_bytes());
+//! ```
+//!
+//! An example of using mempool as an allocator of self-defined objects:
+//!
+//! ```
+//! # use async_dpdk::mempool::{GenericMempool, Mempool, MempoolObj};
+//! # use std::os::raw::c_void;
+//!
+//! #[repr(C)]
+//! #[derive(Default)]
+//! struct SomeType {
+//!     x: u64,
+//!     y: u64,
+//! }
+//! struct SomePtr {
+//!     ptr: *mut SomeType,
+//! }
+//! impl Default for SomePtr {
+//!     fn default() -> Self {
+//!         Self {
+//!             ptr: std::ptr::null_mut(),
+//!         }
+//!     }
+//! }
+//! impl MempoolObj for SomePtr {
+//!     fn into_raw(self) -> *mut c_void {
+//!         self.ptr.cast()
+//!     }
+//!     fn from_raw(ptr: *mut c_void) -> Result<Self, async_dpdk::Error> {
+//!         Ok(Self { ptr: ptr.cast() })
+//!     }
+//!     fn obj_size() -> usize {
+//!         std::mem::size_of::<SomeType>()
+//!     }
+//! }
+//!
+//! # let _ = async_dpdk::eal::Config::new().enter();
+//! let mp: GenericMempool<SomePtr> = GenericMempool::create("mempool", 64).unwrap();
+//! let obj = mp.get().unwrap();
+//! mp.put(obj);
+//! ```
 
 use crate::{lcore, mbuf::Mbuf, Error, Result};
 use dpdk_sys::{
