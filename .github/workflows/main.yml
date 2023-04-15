@@ -65,15 +65,16 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+      - name: Setup hugepages
+        run: |
+          sudo mkdir -p /dev/hugepages
+          sudo mountpoint -q /dev/hugepages || mount -t hugetlbfs nodev /dev/hugepages
+          sudo bash -c "echo 16 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"
       - name: Test
         run: |
-          chmod +x scripts/setup.sh && sudo ./scripts/setup.sh setup
           sudo env PATH=$PATH rustup default stable
           sudo env PATH=$PATH LD_LIBRARY_PATH=/usr/local/lib/x86_64-linux-gnu cargo test -- --test-threads=1
       - name: Setup tmate session on failure
         if: ${{ failure() }}
         uses: mxschmitt/action-tmate@v3
-      # - name: Environment teardown
-      #   if: ${{ always() }}
-      #   run: sudo ./scripts/setup.sh teardown
 

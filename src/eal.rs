@@ -40,6 +40,16 @@ lazy_static! {
     static ref CONTEXT: RwLock<Option<Arc<Eal>>> = RwLock::new(None);
 }
 
+/// Create a new `CString`.
+///
+/// This macro is for internal use. `CString::new` returns an error if the passed-in
+/// string is empty. DO NOT use it without checking.
+macro_rules! cstring {
+    ($s:expr) => {
+        ::std::ffi::CString::new($s).unwrap()
+    };
+}
+
 /// The existence of an `Eal` instance shows the readiness of a DPDK environment.
 #[non_exhaustive]
 #[derive(Debug)]
@@ -111,6 +121,37 @@ pub enum IovaMode {
     VA,
 }
 
+/// DPDK-supported virtual device.
+#[derive(Debug, Clone, Copy)]
+#[non_exhaustive]
+pub enum Vdev {
+    /// `Null` device is a simple virtual driver mainly for testing. It always
+    /// returns success for all packets for Rx/Tx.
+    ///
+    /// Each `Null` device needs an unique integer as its id.
+    ///
+    /// On Rx it returns requested number of empty packets (all zero). On Tx it
+    /// just frees all sent packets.
+    Null(i32),
+
+    /// 'Pcap' device allows you to read/write from/to a .pcap file.
+    ///
+    /// Each `Pcap` device needs an unique integer as its id.
+    ///
+    /// For more information, please refer to [`pcap_ring docs`].
+    Pcap(i32),
+
+    /// `Ring` device uses an `rte_ring` to emulate an Ethernet port. On Rx it gets
+    /// a packet from the ring. On Tx it puts the packet to the ring.
+    ///
+    /// Each `Ring` device needs an unique integer as its id.
+    ///
+    /// For more information, please refer to [`pcap_ring docs`].
+    ///
+    /// [`pcap_ring docs`]: https://doc.dpdk.org/guides/nics/pcap_ring.html
+    Ring(i32),
+}
+
 /// DPDK log level.
 #[repr(u32)]
 #[derive(Debug, Clone, Copy)]
@@ -138,14 +179,11 @@ impl Config {
     /// Create a new eal `Config` instance.
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
+    #[allow(clippy::indexing_slicing)] // the first of env args is the program name
     pub fn new() -> Self {
         let env_args = std::env::args().collect::<Vec<_>>();
         Self {
-            args: vec![
-                #[allow(clippy::indexing_slicing)] // the first of env args is the program name
-                CString::new(env_args[0].as_str()).unwrap(),
-            ],
+            args: vec![cstring!(env_args[0].as_str())],
             addrs: vec![],
         }
     }
@@ -171,10 +209,9 @@ impl Config {
     /// Set core mask to EAL.
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
     pub fn coremask(mut self, mask: u64) -> Self {
-        self.args.push(CString::new("-c").unwrap());
-        self.args.push(CString::new(mask.to_string()).unwrap());
+        self.args.push(cstring!("-c"));
+        self.args.push(cstring!(mask.to_string()));
         self
     }
 
@@ -230,10 +267,9 @@ impl Config {
     /// Disable PCI.
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
     pub fn no_pci(mut self, no_pci: bool) -> Self {
         if no_pci {
-            self.args.push(CString::new("--no-pci").unwrap());
+            self.args.push(cstring!("--no-pci"));
         }
         self
     }
@@ -252,22 +288,33 @@ impl Config {
     /// Reserved memory on start in megabytes.
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
     pub fn memory_mb(mut self, size: u32) -> Self {
-        self.args.push(CString::new("-m").unwrap());
-        self.args.push(CString::new(size.to_string()).unwrap());
+        self.args.push(cstring!("-m"));
+        self.args.push(cstring!(size.to_string()));
         self
     }
 
     /// Set iova mode.
     #[inline]
     #[must_use]
-    #[allow(clippy::unwrap_used, clippy::missing_panics_doc)] // impossible to panic
     pub fn iova_mode(mut self, mode: IovaMode) -> Self {
-        self.args.push(CString::new("--iova-mode").unwrap());
+        self.args.push(cstring!("--iova-mode"));
         match mode {
-            IovaMode::PA => self.args.push(CString::new("pa").unwrap()),
-            IovaMode::VA => self.args.push(CString::new("va").unwrap()),
+            IovaMode::PA => self.args.push(cstring!("pa")),
+            IovaMode::VA => self.args.push(cstring!("va")),
+        }
+        self
+    }
+
+    /// Add a virtual device.
+    #[inline]
+    #[must_use]
+    pub fn vdev(mut self, vdev: Vdev) -> Self {
+        self.args.push(cstring!("--vdev"));
+        match vdev {
+            Vdev::Null(id) => self.args.push(cstring!(format!("net_null{id}"))),
+            Vdev::Pcap(id) => self.args.push(cstring!(format!("net_pcap{id}"))),
+            Vdev::Ring(id) => self.args.push(cstring!(format!("net_ring{id}"))),
         }
         self
     }
