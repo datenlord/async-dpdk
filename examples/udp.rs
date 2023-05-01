@@ -1,6 +1,7 @@
 //! An udp example
 
 use std::net::IpAddr;
+use std::time::Duration;
 
 use async_dpdk::udp::UdpSocket;
 use async_dpdk::{eal, net_dev};
@@ -11,6 +12,7 @@ async fn client() {
     // Bind the client socket to the second NIC.
     let socket = UdpSocket::bind("10.2.3.1:0").unwrap();
     let data = MSG.as_bytes();
+    tokio::time::sleep(Duration::from_millis(10)).await;
     // Send message to server.
     let sz = socket.send_to(data, "10.2.3.0:1234").await.unwrap();
     assert_eq!(sz, MSG.len());

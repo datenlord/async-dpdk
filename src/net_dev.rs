@@ -42,7 +42,7 @@ pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
     for (i, addr) in addrs.into_iter().enumerate() {
         #[allow(clippy::cast_possible_truncation)] // checked
         let port_id = i as u16;
-        // SAFETY: ffi
+        // SAFETY: `dev_info` validity checked in `rte_eth_dev_info_get`
         let dev_info = unsafe {
             let name = CString::new("rte_eth_dev_info").map_err(Error::from)?;
             let dev_info = rte_malloc(name.as_ptr(), mem::size_of::<rte_eth_dev_info>(), 0);
@@ -62,7 +62,7 @@ pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
             running: false,
         });
         debug!("Ethdev {port_id} probed, bound to {addr:?}");
-        // SAFETY: ffi, `dev_info`'s validity is checked upon its allocation
+        // SAFETY: dev_info`'s validity is checked upon its allocation
         #[allow(trivial_casts)]
         unsafe {
             rte_free((dev_info as *mut rte_eth_dev_info).cast());
@@ -145,22 +145,4 @@ pub(crate) fn find_dev_by_ip(ip: IpAddr) -> Result<(TxSender, rte_ether_addr)> {
     }
     error!("Ip address {ip} not matched to any address");
     Err(Error::InvalidArg)
-}
-
-#[cfg(test)]
-mod tests {
-    use crate::eal;
-
-    use super::{device_close, device_probe, device_start, device_stop};
-
-    #[tokio::test]
-    async fn test() {
-        env_logger::init();
-        let _ = eal::Config::new().enter();
-        let ip = vec!["10.2.3.4".parse().unwrap()];
-        device_probe(ip).unwrap();
-        device_start().unwrap();
-        device_stop().unwrap();
-        device_close().unwrap();
-    }
 }

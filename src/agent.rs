@@ -1,7 +1,7 @@
 //! RX/TX agent thread, which polls queues in background.
 
 use crate::mbuf::Mbuf;
-use crate::proto::{L3Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP};
+use crate::proto::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP};
 use crate::socket::{self, RecvResult};
 use crate::udp::handle_ipv4_udp;
 use crate::{Error, Result};
@@ -80,15 +80,9 @@ struct IpFragDeathRow {
 impl IpFragmentTable {
     /// Create an `IpFragmentTable`.
     fn new(socket_id: i32) -> Result<Self> {
-        /// Millisecond per second.
-        const MS_PER_S: u64 = 1000;
         // SAFETY: ffi
-        let max_cycles = unsafe {
-            // ceiling(tsc / MS_PER_S ^ 2)
-            rte_get_tsc_hz()
-                .saturating_add(MS_PER_S.saturating_sub(1))
-                .saturating_div(MS_PER_S.saturating_pow(2))
-        };
+        let max_cycles = unsafe { rte_get_tsc_hz() }; // 1s
+
         // SAFETY: pointer checked later
         let ptr = unsafe {
             rte_ip_frag_table_create(
@@ -154,7 +148,9 @@ impl Drop for IpFragDeathRow {
 /// This function returns `None` if it's invalid.
 #[inline]
 #[allow(unsafe_code)]
-fn parse_ether_proto(m: &Mbuf) -> Option<(u32, u8)> {
+fn parse_ether_proto(m: &mut Mbuf) -> Option<(u32, u8)> {
+    // SAFETY: *rte_mbuf checked
+    let raw_mbuf = unsafe { &mut (*m.as_ptr()) };
     let data = m.data_slice();
     let remain = data.len().checked_sub(ETHER_HDR_LEN as _)?;
     // SAFETY: allowed in DPDK
@@ -217,6 +213,15 @@ fn parse_ether_proto(m: &Mbuf) -> Option<(u32, u8)> {
             0
         }
     };
+    // SAFETY: set bitfields
+    if proto_id == IP_NEXT_PROTO_UDP {
+        unsafe {
+            raw_mbuf
+                .tx_offload_union
+                .tx_offload_struct
+                .set_l4_len(L4Protocol::Udp.length());
+        }
+    };
     Some((ether_type, proto_id))
 }
 
@@ -232,16 +237,16 @@ fn handle_ether(
     dr: &mut IpFragDeathRow,
 ) -> Option<(i32, RecvResult)> {
     // l3 protocol, l4 protocol
-    if let Some((ether_type, proto_id)) = parse_ether_proto(&m) {
+    if let Some((ether_type, proto_id)) = parse_ether_proto(&mut m) {
         m.adj(ETHER_HDR_LEN as _).ok()?;
         match ether_type {
             RTE_ETHER_TYPE_IPV4 => {
-                let ptr = m.data_slice_mut().as_mut_ptr();
-                // SAFETY: rte_mbuf data pointer cannot be null
-                let m = if unsafe { rte_ipv4_frag_pkt_is_fragmented(ptr.cast()) } == 0 {
+                let ip_hdr = m.data_slice_mut().as_mut_ptr();
+                // SAFETY: *rte_mbuf checked
+                let m = if unsafe { rte_ipv4_frag_pkt_is_fragmented(ip_hdr.cast()) } == 0 {
                     Some(m)
                 } else {
-                    debug!("Packet need fragmentation");
+                    log::debug!("Packet need fragmentation");
                     // SAFETY: pointers checked
                     let mo = unsafe {
                         rte_ipv4_frag_reassemble_packet(
@@ -249,7 +254,7 @@ fn handle_ether(
                             dr.as_mut_ptr(),
                             m.as_ptr(),
                             rte_rdtsc(),
-                            ptr.cast(),
+                            ip_hdr.cast(),
                         )
                     };
                     if mo.is_null() {
@@ -381,20 +386,18 @@ impl Drop for RxAgent {
 #[allow(unsafe_code)]
 impl TxAgent {
     /// Start a `TxBuffer`, spawn a thread to do the sending job.
-    pub(crate) fn start() -> Result<Arc<Self>> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let _ = std::thread::spawn(move || {
-            #[allow(clippy::unwrap_used)] // impossible to panic since io and timer disabled
-            let rt = Builder::new_current_thread().build().unwrap();
-            tx.send(rt).map_err(Error::from)?;
-            Result::<()>::Ok(())
-        });
-        let rt = rx.recv().map_err(Error::from)?;
+    pub(crate) fn start() -> Arc<Self> {
+        #[allow(clippy::unwrap_used)] // impossible to panic since io and timer disabled
+        let rt = Builder::new_multi_thread()
+            .worker_threads(1)
+            .thread_name("dpdk-tx-agent")
+            .build()
+            .unwrap();
         let this = TxAgent {
             rt: Some(rt),
             tasks: Mutex::new(BTreeMap::new()),
         };
-        Ok(Arc::new(this))
+        Arc::new(this)
     }
 
     /// Register a (`port_id`, `queue_id`) to a `TxAgent`.
@@ -561,6 +564,7 @@ impl TxBuffer {
         Error::from_ret(errno)?;
         #[allow(clippy::cast_sign_loss)] // errno checked
         let nb_frags = errno as usize;
+        log::trace!("tx: nb_frags={nb_frags}");
 
         Self::populate_ether_hdr(ether_src, frags.get(..nb_frags).ok_or(Error::OutOfRange)?);
         for mb in &frags {
@@ -621,7 +625,6 @@ impl TxBuffer {
             sent = sent.wrapping_add(sent2);
         }
 
-        trace!("{sent} packets sent");
         for _ in 0..sent {
             let _ = self.mbufs.pop_front(); // sent messages
         }
@@ -637,7 +640,7 @@ mod tests {
     #[tokio::test]
     async fn test_tx_agent() {
         test_utils::dpdk_setup();
-        let tx_agent = TxAgent::start().unwrap();
+        let tx_agent = TxAgent::start();
         let _ = tx_agent.register(0, 0).unwrap();
         assert!(matches!(
             tx_agent.register(0, 0).unwrap_err(),

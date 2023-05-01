@@ -177,7 +177,7 @@ impl EthDev {
         // XXX now we use one TxAgent and one RxAgent for each EthDev.
         // Make the mapping more flexible.
         let rx_agent = RxAgent::start(self.socket_id);
-        let tx_agent = TxAgent::start()?;
+        let tx_agent = TxAgent::start();
 
         // SAFETY: `port_id` validity verified
         let errno = unsafe { rte_eth_dev_start(self.port_id) };
@@ -391,7 +391,7 @@ mod tests {
     #[tokio::test]
     async fn test() {
         test_utils::dpdk_setup();
-        let mut dev = EthDev::new(0, 1, 1).unwrap();
+        let mut dev = EthDev::new(1, 1, 1).unwrap();
         dev.start().unwrap();
         dev.stop().unwrap();
         dev.start().unwrap();

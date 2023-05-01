@@ -97,8 +97,11 @@ pub fn has_pci() -> bool {
 #[allow(unsafe_code)]
 #[inline]
 pub fn runtime_dir() -> Result<PathBuf> {
-    // SAFETY: ffi
+    // SAFETY: runtime dir pointer checked later
     let ptr = unsafe { rte_eal_get_runtime_dir() };
+    if ptr.is_null() {
+        return Err(Error::NotSupported);
+    }
     // SAFETY: read C string
     let cs = unsafe { CString::from_raw(ptr as _) };
     Ok(PathBuf::from(cs.into_string().map_err(Error::from)?))

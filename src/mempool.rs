@@ -320,7 +320,7 @@ where
     #[inline]
     pub fn put_bulk(&self, objs: Vec<T>, n: u32) {
         let mut objs: Vec<_> = objs.into_iter().map(MempoolObj::into_raw).collect();
-        // SAFETY: ffi
+        // SAFETY: *rte_mempool and *rte_mbuf checked
         #[allow(unsafe_code)]
         unsafe {
             rte_mempool_put_bulk(self.inner.as_ptr(), objs.as_mut_ptr().cast(), n);
@@ -472,7 +472,7 @@ impl MpRef {
     /// The number of available objects.
     #[inline]
     fn avail_count(&self) -> u32 {
-        // SAFETY: ffi
+        // SAFETY: *rte_mempool checked
         #[allow(unsafe_code)]
         unsafe {
             rte_mempool_avail_count(self.mp.as_ptr())
@@ -482,7 +482,7 @@ impl MpRef {
     /// The number of objects that are in-use.
     #[inline]
     fn in_use_count(&self) -> u32 {
-        // SAFETY: ffi
+        // SAFETY: *rte_mempool checked
         #[allow(unsafe_code)]
         unsafe {
             rte_mempool_in_use_count(self.mp.as_ptr())
@@ -514,7 +514,7 @@ impl MpRef {
 impl Drop for MpRef {
     #[inline]
     fn drop(&mut self) {
-        // SAFETY: ffi
+        // SAFETY: *rte_mempool checked
         #[allow(unsafe_code)]
         unsafe {
             rte_mempool_free(self.mp.as_ptr());
