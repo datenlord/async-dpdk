@@ -276,7 +276,7 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) -> Option<(i32, RecvResult)> {
     let _len = udp_hdr.dgram_len.to_be();
     let src_addr = SocketAddr::new(src_ip, src_port);
     m.adj(udp_hdr_len).ok()?;
-    
+
     if m.data_len() == 0 {
         m = m.pop_mbuf()?;
     }
