@@ -13,7 +13,6 @@ use bytes::{Buf, BufMut, BytesMut};
 use dpdk_sys::{
     rte_ether_addr, rte_ether_hdr, rte_ipv4_cksum, rte_ipv4_hdr, rte_udp_hdr, RTE_ETHER_TYPE_IPV4,
 };
-use log::{debug, error};
 use std::{
     fmt::Debug,
     net::{IpAddr, SocketAddr, ToSocketAddrs},
@@ -244,7 +243,7 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) -> Option<(i32, RecvResult)> {
     let dst_ip = IpAddr::from(dst_ip_bytes);
     let src_ip_bytes: [u8; 4] = ip_hdr.src_addr.to_ne_bytes();
     let src_ip = IpAddr::from(src_ip_bytes);
-    debug!("from {src_ip:?} to {dst_ip:?}");
+    log::debug!("from {src_ip:?} to {dst_ip:?}");
 
     if data.len()
         < L3Protocol::Ipv4
@@ -271,6 +270,6 @@ pub(crate) fn handle_ipv4_udp(mut m: Mbuf) -> Option<(i32, RecvResult)> {
     if let Some(sockfd) = addr_2_sockfd(dst_port, dst_ip) {
         return Some((sockfd, Ok((src_addr, packet))));
     }
-    error!("sockfd not found: {dst_ip:?}:{dst_port}");
+    log::warn!("sockfd not found: {dst_ip:?}:{dst_port}");
     None
 }

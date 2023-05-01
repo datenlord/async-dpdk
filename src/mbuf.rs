@@ -258,7 +258,7 @@ impl Mbuf {
     /// with the `Mbuf` unchanged.
     #[inline]
     pub fn trim(&mut self, len: usize) -> Result<()> {
-        // SAFETY: ffi
+        // SAFETY: *rte_mbuf pointer checked
         let res = unsafe { rte_pktmbuf_trim(self.as_ptr(), len.try_into().map_err(Error::from)?) };
         if res == 0 {
             Ok(())
