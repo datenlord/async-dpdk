@@ -431,7 +431,9 @@ impl TxAgent {
             }
         });
         #[allow(clippy::let_underscore_future)] // spawned future polled in background
-        let _ = entry.or_insert(handle);
+        {
+            _ = entry.or_insert(handle);
+        }
 
         Ok(tx)
     }
@@ -533,7 +535,7 @@ impl TxBuffer {
                 .cast::<rte_ether_hdr>())
         };
         // SAFETY: pm checked in m's initialization
-        let _ = unsafe { rte_pktmbuf_adj(pm, ETHER_HDR_LEN) };
+        _ = unsafe { rte_pktmbuf_adj(pm, ETHER_HDR_LEN) };
         // SAFETY: `return_val` packets at the front are valid
         let errno = unsafe {
             let l3_type = (*pm).packet_type_union.packet_type & RTE_PTYPE_L3_MASK;
@@ -626,7 +628,7 @@ impl TxBuffer {
         }
 
         for _ in 0..sent {
-            let _ = self.mbufs.pop_front(); // sent messages
+            _ = self.mbufs.pop_front(); // sent messages
         }
         Ok(())
     }
