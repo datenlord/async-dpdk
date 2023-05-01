@@ -233,40 +233,55 @@ impl Drop for UdpSocket {
 /// Information such as IP + port of source and destination will be parsed,
 /// and the packet will be put into the corresponding `Mailbox`.
 pub(crate) fn handle_ipv4_udp(mut m: Mbuf) -> Option<(i32, RecvResult)> {
-    // Parse IPv4 and UDP header.
-    let data = m.data_slice();
+    let ipv4_hdr_len = L3Protocol::Ipv4.length() as usize;
+    let udp_hdr_len = L4Protocol::Udp.length() as usize;
+    if m.pkt_len() < ipv4_hdr_len.saturating_add(udp_hdr_len) {
+        log::error!("packet too short, less than IPv4 & UDP header");
+        return None;
+    }
 
-    // SAFETY: remain size larger than `rte_ipv4_hdr`, which is checked in `handle_ether`
+    if m.data_len() < ipv4_hdr_len {
+        if m.data_len() == 0 {
+            m = m.pop_mbuf()?;
+        } else {
+            return None;
+        }
+    }
+
+    let ip_hdr = m.data_slice();
+    // SAFETY: remain size larger than `rte_ipv4_hdr`, which is checked in `handle_ether
     #[allow(unsafe_code)]
-    let ip_hdr = unsafe { &*(data.as_ptr().cast::<rte_ipv4_hdr>()) };
+    let ip_hdr = unsafe { &*(ip_hdr.as_ptr().cast::<rte_ipv4_hdr>()) };
     let dst_ip_bytes: [u8; 4] = ip_hdr.dst_addr.to_ne_bytes();
     let dst_ip = IpAddr::from(dst_ip_bytes);
     let src_ip_bytes: [u8; 4] = ip_hdr.src_addr.to_ne_bytes();
     let src_ip = IpAddr::from(src_ip_bytes);
-    log::debug!("from {src_ip:?} to {dst_ip:?}");
+    log::trace!("from {src_ip:?} to {dst_ip:?}");
+    m.adj(ipv4_hdr_len).ok()?;
 
-    if data.len()
-        < L3Protocol::Ipv4
-            .length()
-            .saturating_add(L4Protocol::Udp.length()) as usize
-    {
-        return None;
+    if m.data_len() < udp_hdr_len {
+        if m.data_len() == 0 {
+            m = m.pop_mbuf()?;
+        } else {
+            return None;
+        }
     }
 
+    let udp_hdr = m.data_slice();
     // SAFETY: remain size larger than `rte_udp_hdr` size
     #[allow(unsafe_code, trivial_casts)]
-    let udp_hdr = unsafe { &*((ip_hdr as *const rte_ipv4_hdr).add(1).cast::<rte_udp_hdr>()) };
+    let udp_hdr = unsafe { &*(udp_hdr.as_ptr().cast::<rte_udp_hdr>()) };
     let dst_port = udp_hdr.dst_port;
     let src_port = udp_hdr.src_port;
     let _len = udp_hdr.dgram_len.to_be();
     let src_addr = SocketAddr::new(src_ip, src_port);
+    m.adj(udp_hdr_len).ok()?;
 
-    let hdr_len = L3Protocol::Ipv4
-        .length()
-        .saturating_add(L4Protocol::Udp.length());
-    m.adj(hdr_len as _).ok()?;
+    if m.data_len() == 0 {
+        m = m.pop_mbuf()?;
+    }
+
     let packet = Packet::from_mbuf(m);
-
     if let Some(sockfd) = addr_2_sockfd(dst_port, dst_ip) {
         return Some((sockfd, Ok((src_addr, packet))));
     }

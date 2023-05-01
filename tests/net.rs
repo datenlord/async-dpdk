@@ -13,9 +13,11 @@ fn dpdk_setup() {
     SETUP.call_once(|| {
         env_logger::init();
         eal::Config::new()
+            .no_hugepages(true)
+            .no_pci(true)
             .vdev(Vdev::Ring(0))
-            .vdev(Vdev::Ring(1))
-            .device_probe(&["10.2.3.0", "10.2.3.1"])
+            .max_queues(1)
+            .device_probe(&["10.2.3.0"])
             .unwrap()
             .enter()
             .unwrap();
@@ -34,14 +36,14 @@ mod test_single_client {
         let mut buffer = [0u8; 30];
         let (sz, client_addr) = socket.recv_from(&mut buffer).await.unwrap();
         assert_eq!(sz, MSG.len());
-        assert_eq!(client_addr.ip(), IpAddr::from([10, 2, 3, 1]));
+        assert_eq!(client_addr.ip(), IpAddr::from([10, 2, 3, 0]));
         assert_eq!(&buffer[..sz], MSG.as_bytes());
         let sz = socket.send_to(ACK.as_bytes(), client_addr).await.unwrap();
         assert_eq!(sz, ACK.len());
     }
 
     async fn client() {
-        let socket = UdpSocket::bind("10.2.3.1:0").unwrap();
+        let socket = UdpSocket::bind("10.2.3.0:0").unwrap();
         let mut buffer = [0u8; 30];
         let sz = socket
             .send_to(MSG.as_bytes(), "10.2.3.0:1234")
@@ -81,7 +83,7 @@ mod test_multi_clients {
 
     async fn client(number: i32) {
         let msg = format!("my client number is {}", number);
-        let socket = UdpSocket::bind("10.2.3.1:0").unwrap();
+        let socket = UdpSocket::bind("10.2.3.0:0").unwrap();
         let mut buffer = [0u8; 30];
         let _sz = socket
             .send_to(msg.as_bytes(), "10.2.3.0:1234")
@@ -118,7 +120,7 @@ mod test_fragmentation {
     }
 
     async fn client() {
-        let socket = UdpSocket::bind("10.2.3.1:0").unwrap();
+        let socket = UdpSocket::bind("10.2.3.0:0").unwrap();
         let buffer = [1u8; LEN];
         let sz = socket.send_to(&buffer[..], "10.2.3.0:1234").await.unwrap();
         assert_eq!(sz, LEN);

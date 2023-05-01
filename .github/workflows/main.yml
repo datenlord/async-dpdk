@@ -69,7 +69,7 @@ jobs:
         run: |
           sudo mkdir -p /dev/hugepages
           sudo mountpoint -q /dev/hugepages || mount -t hugetlbfs nodev /dev/hugepages
-          sudo bash -c "echo 16 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"
+          sudo bash -c "echo 32 > /sys/devices/system/node/node0/hugepages/hugepages-2048kB/nr_hugepages"
       - name: Test
         run: |
           sudo env PATH=$PATH rustup default stable

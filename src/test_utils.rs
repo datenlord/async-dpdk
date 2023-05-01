@@ -9,8 +9,7 @@ pub(crate) fn dpdk_setup() {
         env_logger::init();
         eal::Config::new()
             .no_hugepages(true)
-            .vdev(Vdev::Ring(0))
-            .vdev(Vdev::Ring(1))
+            .vdev(Vdev::Null(0))
             .enter()
             .unwrap();
     })

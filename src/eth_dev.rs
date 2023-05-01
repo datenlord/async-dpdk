@@ -18,7 +18,6 @@ use dpdk_sys::{
     rte_eth_rx_queue_setup, rte_eth_tx_queue_setup, rte_ether_addr,
     RTE_ETH_TX_OFFLOAD_MBUF_FAST_FREE,
 };
-use log::{debug, trace};
 use std::{fmt::Debug, mem::MaybeUninit, ptr, sync::Arc};
 use tokio::sync::mpsc;
 
@@ -102,7 +101,7 @@ impl EthDev {
         #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_configure(port_id, n_rxq, n_txq, &eth_conf) };
         Error::from_ret(errno)?;
-        trace!("Device {port_id} successfully configured");
+        log::trace!("Device {port_id} successfully configured");
         let mut n_rxd = 1024;
         let mut n_txd = 1024;
         // SAFETY: ffi
@@ -131,13 +130,13 @@ impl EthDev {
             tx_queue.push(EthTxQueue::init(
                 port_id, queue_id, socket_id, n_txd, &dev_info, &eth_conf,
             )?);
-            trace!("Device {port_id} successfully initialized tx_queue {queue_id}");
+            log::trace!("Device {port_id} successfully initialized tx_queue {queue_id}");
         }
         for queue_id in 0..n_rxq {
             rx_queue.push(EthRxQueue::init(
                 port_id, queue_id, socket_id, n_rxd, n_elem, &dev_info, &eth_conf,
             )?);
-            trace!("Device {port_id} successfully initialized rx_queue {queue_id}");
+            log::trace!("Device {port_id} successfully initialized rx_queue {queue_id}");
         }
 
         let tx_chan = (0..n_txq).map(|_| None).collect();
@@ -182,7 +181,7 @@ impl EthDev {
         // SAFETY: `port_id` validity verified
         let errno = unsafe { rte_eth_dev_start(self.port_id) };
         Error::from_ret(errno)?;
-        debug!("Device {} successfully started", self.port_id);
+        log::debug!("Device {} successfully started", self.port_id);
         // SAFETY: `ptypes` is ok to be NULL
         #[allow(clippy::shadow_unrelated)] // is related
         let errno = unsafe { rte_eth_dev_set_ptypes(self.port_id, 0, ptr::null_mut(), 0) };
@@ -232,7 +231,7 @@ impl EthDev {
         // SAFETY: `port_id` validity verified
         let errno = unsafe { rte_eth_dev_stop(self.port_id) };
         Error::from_ret(errno)?;
-        debug!("Device {} successfully stopped", self.port_id);
+        log::debug!("Device {} successfully stopped", self.port_id);
         Ok(())
     }
 
@@ -391,7 +390,7 @@ mod tests {
     #[tokio::test]
     async fn test() {
         test_utils::dpdk_setup();
-        let mut dev = EthDev::new(1, 1, 1).unwrap();
+        let mut dev = EthDev::new(0, 1, 1).unwrap();
         dev.start().unwrap();
         dev.stop().unwrap();
         dev.start().unwrap();
