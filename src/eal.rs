@@ -114,6 +114,8 @@ pub struct Config {
     args: Vec<CString>,
     /// IP addresses for each `EthDev`s.
     addrs: Vec<IpAddr>,
+    /// Max RX/TX queues number for each devices.
+    max_queues: Option<u16>,
 }
 
 /// IOVA mode. The addresses used by hardwares, it should either be physical addresses or
@@ -190,7 +192,7 @@ impl Config {
         let env_args = std::env::args().collect::<Vec<_>>();
         Self {
             args: vec![cstring!(env_args[0].as_str())],
-            addrs: vec![],
+            ..Default::default()
         }
     }
 
@@ -336,6 +338,14 @@ impl Config {
         self
     }
 
+    /// Set max RX/TX queue number.
+    #[inline]
+    #[must_use]
+    pub fn max_queues(mut self, max_queues: u16) -> Self {
+        self.max_queues = Some(max_queues);
+        self
+    }
+
     /// Initialize the Environment Abstraction Layer (EAL). This function is to be executed on the MAIN
     /// lcore only, as soon as possible in the application's `main()` function.
     ///
@@ -384,7 +394,12 @@ impl Config {
         }
         let context = Arc::new(Eal {});
         *CONTEXT.write().map_err(Error::from)? = Some(context);
-        net_dev::device_probe(self.addrs)?;
+        if let Some(max_queues) = self.max_queues {
+            if max_queues == 0 {
+                return Err(Error::InvalidArg);
+            }
+        }
+        net_dev::device_probe(self.addrs, self.max_queues.unwrap_or(u16::MAX))?;
         Ok(())
     }
 }

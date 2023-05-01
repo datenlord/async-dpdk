@@ -28,7 +28,7 @@ struct InetDevice {
 /// Probe all devices.
 #[allow(unsafe_code)]
 #[allow(clippy::similar_names)] // tx and rx are DPDK terms
-pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
+pub(crate) fn device_probe(addrs: Vec<IpAddr>, max_queues: u16) -> Result<()> {
     let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
     if !inet_device.is_empty() {
         error!("Device already probed");
@@ -53,8 +53,8 @@ pub(crate) fn device_probe(addrs: Vec<IpAddr>) -> Result<()> {
             })?;
             &mut *(dev_info.cast::<rte_eth_dev_info>())
         };
-        let n_rxq = dev_info.max_rx_queues;
-        let n_txq = dev_info.max_tx_queues;
+        let n_rxq = dev_info.max_rx_queues.min(max_queues);
+        let n_txq = dev_info.max_tx_queues.min(max_queues);
         let ethdev = EthDev::new(port_id, n_rxq, n_txq)?;
         inet_device.push(InetDevice {
             ip: addr,
