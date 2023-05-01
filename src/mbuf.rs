@@ -267,6 +267,34 @@ impl Mbuf {
         }
     }
 
+    /// Pop the mbuf at the front.
+    #[inline]
+    #[must_use]
+    pub fn pop_mbuf(self) -> Option<Mbuf> {
+        let prev = self.as_ptr();
+        // SAFETY: `prev` checked in `Mbuf::new`
+        let ptr = unsafe {
+            let ptr = (*prev).next;
+            (*prev).next = ptr::null_mut();
+            ptr
+        };
+        let m = Mbuf::new_with_ptr(ptr).ok()?;
+        // SAFETY: `ptr` and `prev` checked
+        unsafe {
+            (*ptr).refcnt = (*prev).refcnt;
+            (*ptr).nb_segs = (*prev).nb_segs.saturating_sub(1);
+            (*ptr).ol_flags = (*prev).ol_flags;
+            (*ptr).pkt_len = (*prev).pkt_len.saturating_sub(u32::from((*prev).data_len));
+            (*ptr)
+                .packet_type_union
+                .clone_from(&(*prev).packet_type_union);
+            (*ptr)
+                .tx_offload_union
+                .clone_from(&(*prev).tx_offload_union);
+        }
+        Some(m)
+    }
+
     /// Chain an mbuf to another, thereby creating a segmented packet.
     ///
     /// Note: The implementation will do a linear walk over the segments to find the tail entry.
@@ -503,5 +531,15 @@ mod tests {
         let mbuf2 = mbuf.clone(&mp).unwrap();
         assert_eq!(mbuf2.data_slice(), &[0, 1, 2, 3, 4]);
         assert_eq!(mbuf2.num_segs(), 3);
+
+        // Mbuf pop
+        let mbuf = mbuf.pop_mbuf().unwrap();
+        assert_eq!(mbuf.num_segs(), 2);
+        assert_eq!(mbuf.pkt_len(), 10);
+
+        // Mbuf iteration
+        for m in mbuf.iter() {
+            assert_eq!(m.data_len(), 5);
+        }
     }
 }
