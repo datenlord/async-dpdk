@@ -10,6 +10,7 @@ use std::{
 };
 use tokio::sync::{
     mpsc::error::SendError as TokioMpscSendError,
+    mpsc::error::TrySendError as TokioMpscTrySendError,
     oneshot::error::RecvError as TokioOneshotRecvError,
 };
 
@@ -19,72 +20,73 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Errors from DPDK and rust.
 #[doc(hidden)]
 #[non_exhaustive]
+#[repr(i32)]
 #[derive(Copy, Clone, Debug, thiserror::Error)]
 pub enum Error {
     #[error("Operation not permitted")]
-    NoPerm,
+    NoPerm = libc::EPERM,
     #[error("No such file or directory")]
-    NoEntry,
+    NoEntry = libc::ENOENT,
     #[error("No such process")]
-    NoProc,
+    NoProc = libc::ESRCH,
     #[error("Interrupted system call")]
-    Interrupted,
+    Interrupted = libc::EINTR,
     #[error("Input/output error")]
-    IoErr,
+    IoErr = libc::EIO,
     #[error("Device not configured")]
-    NotConfigured,
+    NotConfigured = libc::ENXIO,
     #[error("Argument list too long")]
-    TooBig,
+    TooBig = libc::E2BIG,
     #[error("Exec format error")]
-    NoExec,
+    NoExec = libc::ENOEXEC,
     #[error("Bad fd")]
-    BadFd,
+    BadFd = libc::EBADF,
     #[error("Resource temporarily unavailable")]
-    TempUnavail,
+    TempUnavail = libc::EAGAIN,
     #[error("Cannot allocate memory")]
-    NoMem,
+    NoMem = libc::ENOMEM,
     #[error("Permission denied")]
-    NoAccess,
+    NoAccess = libc::EACCES,
     #[error("Bad address")]
-    BadAddress,
+    BadAddress = libc::EFAULT,
     #[error("Device or resource busy")]
-    Busy,
+    Busy = libc::EBUSY,
     #[error("File exists")]
-    Exists,
+    Exists = libc::EEXIST,
     #[error("Invalid cross device link")]
-    CrossDev,
+    CrossDev = libc::EXDEV,
     #[error("No such device")]
-    NoDev,
+    NoDev = libc::ENODEV,
     #[error("Invalid argument")]
-    InvalidArg,
+    InvalidArg = libc::EINVAL,
     #[error("No space left on device")]
-    NoSpace,
+    NoSpace = libc::ENOSPC,
     #[error("Broken pipe")]
-    BrokenPipe,
+    BrokenPipe = libc::EPIPE,
     #[error("Numerical result out of range")]
-    OutOfRange,
+    OutOfRange = libc::ERANGE,
     #[error("Value too large for defined data type")]
-    Overflow,
+    Overflow = libc::EOVERFLOW,
     #[error("Not supported")]
-    NotSupported,
+    NotSupported = libc::ENOTSUP,
     #[error("Operation already in progress")]
-    Already,
+    Already = libc::EALREADY,
     #[error("No buffer space available")]
-    NoBuf,
+    NoBuf = libc::ENOBUFS,
     #[error("Protocol error")]
-    Proto,
+    Proto = libc::EPROTO,
     #[error("Operation not allowed in secondary processes")]
-    Secondary, // RTE defined
+    Secondary = 1001, // RTE defined
     #[error("Missing rte_config")]
-    NoConfig, // RTE defined
+    NoConfig = 1002, // RTE defined
+    #[error("Lock poisoned")]
+    Poisoned = 1003,
+    #[error("Needed resource not started")]
+    NotStart = 1004,
+    #[error("Not exist")]
+    NotExist = 1005,
     #[error("Unknown error")]
     Unknown,
-    #[error("Lock poisoned")]
-    Poisoned,
-    #[error("Needed resource not started")]
-    NotStart,
-    #[error("Not exist")]
-    NotExist,
 }
 
 #[doc(hidden)]
@@ -158,6 +160,9 @@ impl From<i32> for Error {
             libc::EPROTO => Error::Proto,
             1001 => Error::Secondary,
             1002 => Error::NoConfig,
+            1003 => Error::Poisoned,
+            1004 => Error::NotStart,
+            1005 => Error::NotExist,
             e if e > 0 => Error::Unknown,
             _ => unreachable!("errno = {}", errno), // negative number
         }
@@ -175,6 +180,13 @@ impl<T> From<TokioMpscSendError<T>> for Error {
     #[inline]
     fn from(_error: TokioMpscSendError<T>) -> Self {
         Error::BrokenPipe
+    }
+}
+
+impl<T> From<TokioMpscTrySendError<T>> for Error {
+    #[inline]
+    fn from(_error: TokioMpscTrySendError<T>) -> Self {
+        Error::TempUnavail
     }
 }
 

@@ -19,12 +19,14 @@ use std::collections::{btree_map::Entry, BTreeMap, BTreeSet, VecDeque};
 use std::ffi::CString;
 use std::mem;
 use std::ptr::{self, NonNull};
+use std::sync::atomic::AtomicI32;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc, Mutex,
 };
+use tokio::task::LocalSet;
 use tokio::{
-    runtime::{Builder, Runtime},
+    runtime::Builder,
     sync::mpsc,
     task::{self, JoinHandle},
 };
@@ -56,12 +58,15 @@ pub(crate) struct RxAgent {
     tasks: Mutex<BTreeSet<(u16, u16)>>,
 }
 
+/// A map to store the spawned tx tasks.
+type TaskSetType = Arc<Mutex<BTreeMap<(u16, u16), JoinHandle<()>>>>;
+
 /// An agent thread doing sending.
 pub(crate) struct TxAgent {
-    /// Single-threaded `Runtime`.
-    rt: Option<Runtime>,
+    /// Task sender
+    sender: mpsc::Sender<TxTask>,
     /// For each queue registered, there's a Task polling it.
-    tasks: Mutex<BTreeMap<(u16, u16), JoinHandle<()>>>,
+    tasks: TaskSetType,
 }
 
 /// Table holding fragmented packets.
@@ -383,20 +388,85 @@ impl Drop for RxAgent {
     }
 }
 
+/// Tell the background Runtime that a new task's arrival.
+struct TxTask {
+    /// Port id
+    port_id: u16,
+    /// Queue id
+    queue_id: u16,
+    /// For the newly spawned task to hear requests
+    rx: mpsc::Receiver<Mbuf>,
+    /// Notify caller the result
+    done: Arc<AtomicI32>,
+}
+
 #[allow(unsafe_code)]
 impl TxAgent {
     /// Start a `TxBuffer`, spawn a thread to do the sending job.
+    #[allow(clippy::let_underscore_must_use, clippy::let_underscore_future)] // background task
     pub(crate) fn start() -> Arc<Self> {
+        let (sender, mut receiver) = mpsc::channel::<TxTask>(64);
+
+        let tasks = Arc::new(Mutex::new(BTreeMap::new()));
+        let tasks1 = Arc::clone(&tasks);
+
         #[allow(clippy::unwrap_used)] // impossible to panic since io and timer disabled
-        let rt = Builder::new_multi_thread()
-            .worker_threads(1)
-            .thread_name("dpdk-tx-agent")
-            .build()
-            .unwrap();
-        let this = TxAgent {
-            rt: Some(rt),
-            tasks: Mutex::new(BTreeMap::new()),
-        };
+        let rt = Builder::new_current_thread().build().unwrap();
+
+        _ = std::thread::spawn(move || {
+            /// spawn a new task doing polling on the given queue.
+            fn spawn_new_task(
+                tasks: &TaskSetType,
+                port_id: u16,
+                queue_id: u16,
+                mut rx: mpsc::Receiver<Mbuf>,
+            ) -> Result<()> {
+                let mut tasks = tasks.lock().map_err(Error::from)?;
+                let entry = tasks.entry((port_id, queue_id));
+                if matches!(entry, Entry::Occupied(_)) {
+                    Err(Error::Already)?;
+                }
+
+                let handle = task::spawn_local(async move {
+                    let mut txbuf = TxBuffer::new(port_id, queue_id);
+                    while let Some(m) = rx.recv().await {
+                        let res = txbuf.buffer(m);
+                        if let Err(e) = res {
+                            // TODO buffer could be full, should notify the caller.
+                            error!("An error {e} occurred in bufferring");
+                        }
+                    }
+                });
+                #[allow(clippy::let_underscore_future)] // spawned future polled in background
+                {
+                    _ = entry.or_insert(handle);
+                }
+                Ok(())
+            }
+
+            let local = LocalSet::new();
+
+            _ = local.spawn_local(async move {
+                while let Some(TxTask {
+                    port_id,
+                    queue_id,
+                    rx,
+                    done,
+                }) = receiver.recv().await
+                {
+                    let val = match spawn_new_task(&tasks1, port_id, queue_id, rx) {
+                        Ok(()) => 0,
+                        Err(e) => (e as i32).saturating_neg(),
+                    };
+                    done.store(val, Ordering::Release);
+                }
+            });
+
+            // return once sender is dropped and all spawned tasks have returned.
+            // sender is dropped before self's drop.
+            rt.block_on(local);
+        });
+        let this = TxAgent { sender, tasks };
         Arc::new(this)
     }
 
@@ -413,28 +483,18 @@ impl TxAgent {
         port_id: u16,
         queue_id: u16,
     ) -> Result<mpsc::Sender<Mbuf>> {
-        let mut tasks = self.tasks.lock().map_err(Error::from)?;
-        let entry = tasks.entry((port_id, queue_id));
-        if matches!(entry, Entry::Occupied(_)) {
-            return Err(Error::Already);
-        }
-
-        let (tx, mut rx) = mpsc::channel::<Mbuf>(TX_CHAN_SIZE);
-        let handle = self.rt.as_ref().ok_or(Error::NotStart)?.spawn(async move {
-            let mut txbuf = TxBuffer::new(port_id, queue_id);
-            while let Some(m) = rx.recv().await {
-                let res = txbuf.buffer(m);
-                if let Err(e) = res {
-                    // TODO buffer could be full, should notify the caller.
-                    error!("An error {e} occurred in bufferring");
-                }
-            }
-        });
-        #[allow(clippy::let_underscore_future)] // spawned future polled in background
-        {
-            _ = entry.or_insert(handle);
-        }
-
+        let (tx, rx) = mpsc::channel::<Mbuf>(TX_CHAN_SIZE);
+        let done = Arc::new(AtomicI32::new(1));
+        let task = TxTask {
+            port_id,
+            queue_id,
+            rx,
+            done: Arc::clone(&done),
+        };
+        self.sender.try_send(task).map_err(Error::from)?;
+        while done.load(Ordering::Acquire) == 1 {}
+        let errno = done.load(Ordering::Relaxed);
+        Error::from_ret(errno)?;
         Ok(tx)
     }
 
@@ -466,9 +526,6 @@ impl Drop for TxAgent {
                 handle.abort();
             }
             tasks.clear();
-        }
-        if let Some(rt) = self.rt.take() {
-            rt.shutdown_background();
         }
     }
 }
