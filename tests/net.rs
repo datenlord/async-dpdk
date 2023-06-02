@@ -4,7 +4,7 @@ use async_dpdk::{
     net_dev,
     udp::UdpSocket,
 };
-use std::{sync::Once, time::Duration};
+use std::{env, sync::Once, time::Duration};
 use tokio::{task, time};
 
 static SETUP: Once = Once::new();
@@ -12,6 +12,7 @@ static SETUP: Once = Once::new();
 fn dpdk_setup() {
     SETUP.call_once(|| {
         env_logger::init();
+        println!("{:?}", env::var("RUST_LOG"));
         eal::Config::new()
             .no_hugepages(true)
             .no_pci(true)
@@ -21,6 +22,7 @@ fn dpdk_setup() {
             .unwrap()
             .enter()
             .unwrap();
+        log::warn!("iniiniiniini");
     })
 }
 
@@ -59,12 +61,12 @@ mod test_single_client {
     #[tokio::test]
     async fn test() {
         dpdk_setup();
-        net_dev::device_start().unwrap();
+        net_dev::device_start_all().unwrap();
         let server = task::spawn(server());
         time::sleep(Duration::from_millis(5)).await;
         client().await;
         server.await.unwrap();
-        net_dev::device_stop().unwrap();
+        net_dev::device_stop_all().unwrap();
     }
 }
 
@@ -95,13 +97,13 @@ mod test_multi_clients {
     #[tokio::test]
     async fn test() {
         dpdk_setup();
-        net_dev::device_start().unwrap();
+        net_dev::device_start_all().unwrap();
         let server = task::spawn(server());
         time::sleep(Duration::from_millis(5)).await;
         client(0).await;
         client(1).await;
         server.await.unwrap();
-        net_dev::device_stop().unwrap();
+        net_dev::device_stop_all().unwrap();
     }
 }
 
@@ -129,11 +131,11 @@ mod test_fragmentation {
     #[tokio::test]
     async fn test() {
         dpdk_setup();
-        net_dev::device_start().unwrap();
+        net_dev::device_start_all().unwrap();
         let server = task::spawn(server());
         time::sleep(Duration::from_millis(5)).await;
         client().await;
         server.await.unwrap();
-        net_dev::device_stop().unwrap();
+        net_dev::device_stop_all().unwrap();
     }
 }

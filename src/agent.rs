@@ -1,9 +1,11 @@
 //! RX/TX agent thread, which polls queues in background.
 
 use crate::mbuf::Mbuf;
-use crate::proto::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP};
-use crate::socket::{self, RecvResult};
-use crate::udp::handle_ipv4_udp;
+use crate::proto::{
+    socket::{self, RecvResult},
+    udp::handle_ipv4_udp,
+    L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP,
+};
 use crate::{Error, Result};
 use dpdk_sys::{
     rte_eth_rx_burst, rte_eth_tx_burst, rte_ether_addr_copy, rte_ether_hdr, rte_free,
@@ -59,7 +61,7 @@ pub(crate) struct RxAgent {
 }
 
 /// A map to store the spawned tx tasks.
-type TaskSetType = Arc<Mutex<BTreeMap<(u16, u16), JoinHandle<()>>>>;
+type TaskSetType = Arc<Mutex<BTreeMap<(u16, u16), JoinHandle<Result<()>>>>>;
 
 /// An agent thread doing sending.
 pub(crate) struct TxAgent {
@@ -153,7 +155,7 @@ impl Drop for IpFragDeathRow {
 /// This function returns `None` if it's invalid.
 #[inline]
 #[allow(unsafe_code)]
-fn parse_ether_proto(m: &mut Mbuf) -> Option<(u32, u8)> {
+fn parse_ether_proto(m: &Mbuf) -> Option<(u32, u8)> {
     // SAFETY: *rte_mbuf checked
     let raw_mbuf = unsafe { &mut (*m.as_ptr()) };
     let data = m.data_slice();
@@ -242,7 +244,7 @@ fn handle_ether(
     dr: &mut IpFragDeathRow,
 ) -> Option<(i32, RecvResult)> {
     // l3 protocol, l4 protocol
-    if let Some((ether_type, proto_id)) = parse_ether_proto(&mut m) {
+    if let Some((ether_type, proto_id)) = parse_ether_proto(&m) {
         m.adj(ETHER_HDR_LEN as _).ok()?;
         match ether_type {
             RTE_ETHER_TYPE_IPV4 => {
@@ -403,7 +405,6 @@ struct TxTask {
 #[allow(unsafe_code)]
 impl TxAgent {
     /// Start a `TxBuffer`, spawn a thread to do the sending job.
-    #[allow(clippy::let_underscore_must_use, clippy::let_underscore_future)] // background task
     pub(crate) fn start() -> Arc<Self> {
         let (sender, mut receiver) = mpsc::channel::<TxTask>(64);
 
@@ -413,7 +414,7 @@ impl TxAgent {
         #[allow(clippy::unwrap_used)] // impossible to panic since io and timer disabled
         let rt = Builder::new_current_thread().build().unwrap();
 
-        _ = std::thread::spawn(move || {
+        let _handle = std::thread::spawn(move || {
             /// spawn a new task doing polling on the given queue.
             fn spawn_new_task(
                 tasks: &TaskSetType,
@@ -430,14 +431,12 @@ impl TxAgent {
                 let handle = task::spawn_local(async move {
                     let mut txbuf = TxBuffer::new(port_id, queue_id);
                     while let Some(m) = rx.recv().await {
-                        let res = txbuf.buffer(m);
-                        if let Err(e) = res {
-                            // TODO buffer could be full, should notify the caller.
-                            error!("An error {e} occurred in bufferring");
-                        }
+                        txbuf.buffer(m)?;
                     }
+                    Result::Ok(())
                 });
-                #[allow(clippy::let_underscore_future)] // spawned future polled in background
+
+                #[allow(clippy::let_underscore_future)] // this is only a ref to a Future
                 {
                     _ = entry.or_insert(handle);
                 }
@@ -446,7 +445,7 @@ impl TxAgent {
 
             let local = LocalSet::new();
 
-            _ = local.spawn_local(async move {
+            let _main_task = local.spawn_local(async move {
                 while let Some(TxTask {
                     port_id,
                     queue_id,
@@ -653,7 +652,7 @@ impl TxBuffer {
         let (msg1, msg2) = self.mbufs.as_mut_slices();
         let mut sent = 0_u16;
         let mut unsent = true;
-        // XXX pop_front???
+
         if !msg1.is_empty() {
             #[allow(clippy::cast_possible_truncation)]
             // SAFETY: msg1 length checked
