@@ -1,6 +1,7 @@
 //! Protocols supported in this lib.
 
-#![doc(hidden)]
+pub mod socket;
+pub mod udp;
 
 use dpdk_sys::{
     RTE_PTYPE_L2_ETHER, RTE_PTYPE_L3_IPV4, RTE_PTYPE_L3_IPV6, RTE_PTYPE_L4_TCP, RTE_PTYPE_L4_UDP,

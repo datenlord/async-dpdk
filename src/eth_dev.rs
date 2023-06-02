@@ -237,12 +237,8 @@ impl EthDev {
 
     /// Get a `TxSender`.
     ///
-    /// # Errors
-    ///
-    /// Possible reasons for an error:
-    ///
-    /// - Invalid `queue_id`.
-    /// - Queue not registered.
+    /// This function returns None if the `queue_id` is invalid or the queue is
+    /// not registered yet.
     pub(crate) fn sender(&self, queue_id: u16) -> Option<TxSender> {
         let chan: mpsc::Sender<Mbuf> = self.tx_chan.get(queue_id as usize)?.clone()?;
         let tx_queue: Arc<EthTxQueue> = Arc::clone(self.tx_queue.get(queue_id as usize)?);
@@ -295,7 +291,7 @@ impl Debug for EthDev {
 #[derive(Debug)]
 pub(crate) struct TxSender {
     /// The sender held by socket.
-    chan: mpsc::Sender<Mbuf>,
+    chan: mpsc::Sender<Mbuf>, // TODO add a oneshot sender
     /// The `EthTxQueue` that this request is sent to.
     tx_queue: Arc<EthTxQueue>,
 }

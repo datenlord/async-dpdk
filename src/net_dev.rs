@@ -26,14 +26,18 @@ struct InetDevice {
 }
 
 /// Probe all devices.
+///
+/// IP addresses assigned to devices should be distinct. The input addresses
+/// are automatically deduplicated.
 #[allow(unsafe_code)]
 #[allow(clippy::similar_names)] // tx and rx are DPDK terms
-pub(crate) fn device_probe(addrs: Vec<IpAddr>, max_queues: u16) -> Result<()> {
+pub(crate) fn device_probe(mut addrs: Vec<IpAddr>, max_queues: u16) -> Result<()> {
     let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
     if !inet_device.is_empty() {
         error!("Device already probed");
         return Err(Error::Already);
     }
+    addrs.dedup();
     let ndev = EthDev::available_ports();
     if (ndev as usize) < addrs.len() || (u16::MAX as usize) < addrs.len() {
         error!("Address list too long");
@@ -78,7 +82,7 @@ pub(crate) fn device_probe(addrs: Vec<IpAddr>, max_queues: u16) -> Result<()> {
 /// - Lock poisoned.
 /// - Unable to start device.
 #[inline]
-pub fn device_start() -> Result<()> {
+pub fn device_start_all() -> Result<()> {
     let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
     let inet_iter = inet_device.iter_mut();
     for dev in inet_iter {
@@ -98,7 +102,7 @@ pub fn device_start() -> Result<()> {
 /// - Lock poisoned.
 /// - Unable to stop device.
 #[inline]
-pub fn device_stop() -> Result<()> {
+pub fn device_stop_all() -> Result<()> {
     let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
     let inet_iter = inet_device.iter_mut();
     for dev in inet_iter {
@@ -107,6 +111,52 @@ pub fn device_stop() -> Result<()> {
         dev.running = false;
     }
     Ok(())
+}
+
+/// Start a specific probed device.
+///
+/// # Errors
+///
+/// Possible reasons:
+///
+/// - Lock poisoned.
+/// - Unable to start device.
+#[inline]
+pub fn device_start(addr: &IpAddr) -> Result<()> {
+    let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
+    let inet_iter = inet_device.iter_mut();
+    for dev in inet_iter {
+        if &dev.ip == addr {
+            dev.ethdev.start()?;
+            debug!("Device {} started", dev.ethdev.port_id());
+            dev.running = true;
+            return Ok(());
+        }
+    }
+    Err(Error::NoDev)
+}
+
+/// Close a specific probed device.
+///
+/// # Errors
+///
+/// Possible reasons:
+///
+/// - Lock poisoned.
+/// - Unable to stop device.
+#[inline]
+pub fn device_stop(addr: &IpAddr) -> Result<()> {
+    let mut inet_device = INET_DEVICE.write().map_err(Error::from)?;
+    let inet_iter = inet_device.iter_mut();
+    for dev in inet_iter {
+        if &dev.ip == addr {
+            dev.ethdev.stop()?;
+            debug!("Device {} stopped", dev.ethdev.port_id());
+            dev.running = false;
+            return Ok(());
+        }
+    }
+    Err(Error::NoDev)
 }
 
 /// Close all probed device.

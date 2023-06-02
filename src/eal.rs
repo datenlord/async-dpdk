@@ -67,6 +67,9 @@ impl Drop for Eal {
         // SAFETY: ffi
         #[allow(unsafe_code)]
         let errno = unsafe { rte_eal_cleanup() };
+        if let Err(e) = Error::from_ret(errno) {
+            log::error!("Fatal error occurred in EAL cleanup: {e:?}");
+        }
         Error::parse_err(errno);
     }
 }

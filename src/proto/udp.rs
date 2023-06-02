@@ -5,8 +5,8 @@ use crate::{
     mbuf::Mbuf,
     net_dev,
     packet::Packet,
+    proto::socket::{self, addr_2_sockfd, Mailbox, RecvResult, IPID},
     proto::{L3Protocol, L4Protocol, Protocol, ETHER_HDR_LEN, IP_NEXT_PROTO_UDP},
-    socket::{self, addr_2_sockfd, Mailbox, RecvResult, IPID},
     Error, Result,
 };
 use bytes::{Buf, BufMut, BytesMut};

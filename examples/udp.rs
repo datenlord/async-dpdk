@@ -39,10 +39,10 @@ async fn main() {
         .enter()
         .unwrap();
     // Let the devices start polling.
-    net_dev::device_start().unwrap();
+    net_dev::device_start_all().unwrap();
     let srv = tokio::task::spawn(server());
     client().await;
     srv.await.unwrap();
     // Stop the polling threads.
-    net_dev::device_stop().unwrap();
+    net_dev::device_stop_all().unwrap();
 }

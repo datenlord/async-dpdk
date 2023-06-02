@@ -116,14 +116,13 @@ pub mod mbuf;
 pub mod mempool;
 pub mod net_dev;
 pub mod packet;
-pub mod udp;
 
 mod agent;
 mod errno;
 mod eth_dev;
 mod proto;
-mod socket;
 #[cfg(test)]
 mod test_utils;
 
 pub use errno::*;
+pub use proto::*;
